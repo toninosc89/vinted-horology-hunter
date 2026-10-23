@@ -240,11 +240,10 @@ class HorologyMASOrchestrator:
         # (even when appraised concurrently in the same batch) have 100% identical market values
         reconcile_all_cached_appraisals(db_path=self.db_path)
         final_appraisals = [
-            apply_canonical_valuation(
-                a,
-                description_text=get_cached_description(a.vinted_id, db_path=self.db_path),
-                db_path=self.db_path,
+            get_cached_appraisal(
+                a.vinted_id, a.price_listed_eur, db_path=self.db_path
             )
+            or a
             for a in final_appraisals
         ]
 
@@ -370,5 +369,11 @@ class HorologyMASOrchestrator:
             description_text=deep_item.description,
             db_path=self.db_path,
         )
-        return appraisal
+        reconcile_all_cached_appraisals(db_path=self.db_path)
+        return (
+            get_cached_appraisal(
+                appraisal.vinted_id, appraisal.price_listed_eur, db_path=self.db_path
+            )
+            or appraisal
+        )
 

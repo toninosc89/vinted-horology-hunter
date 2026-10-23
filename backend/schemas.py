@@ -31,6 +31,12 @@ class WatchAppraisal(BaseModel):
     model_used: str
     tokens_used: int
     cost_usd: float
+    canonical_ref_key: Optional[str] = None
+    roi_pct: Optional[float] = None
+    is_best_price_for_ref: bool = False
+    ref_listings_count: int = 1
+    ref_lowest_price_eur: Optional[float] = None
+    is_duplicate_repost: bool = False
 
 
 class CatalogItem(BaseModel):

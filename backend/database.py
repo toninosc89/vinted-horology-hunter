@@ -116,6 +116,57 @@ def extract_canonical_reference_key(
     return None
 
 
+def compute_deterministic_deal_score(
+    net_margin_eur: float,
+    total_cost_eur: float,
+    is_working_verified: bool,
+    franken_fake_risk: str,
+    confidence_score: float,
+) -> tuple[int, float, str]:
+    """
+    Calculates a deterministic Deal Score (1..10), ROI %, and Recommended Action
+    strictly anchored to the real net margin potential, ROI %, working status, and franken risk.
+    """
+    cost_base = max(total_cost_eur, 1.0)
+    roi_pct = round((net_margin_eur / cost_base) * 100.0, 1)
+
+    if not is_working_verified:
+        return 1, roi_pct, "SCARTA"
+    if franken_fake_risk == "HIGH":
+        return 2, roi_pct, "SCARTA"
+
+    if roi_pct >= 55.0 and net_margin_eur >= 50.0:
+        score = 10
+    elif (roi_pct >= 32.0 and net_margin_eur >= 25.0) or net_margin_eur >= 70.0:
+        score = 9
+    elif (roi_pct >= 15.0 and net_margin_eur >= 12.0) or net_margin_eur >= 35.0:
+        score = 8
+    elif net_margin_eur >= 0.0:
+        score = 7
+    elif roi_pct >= -26.0 or net_margin_eur >= -45.0:
+        score = 6
+    elif roi_pct >= -40.0 or net_margin_eur >= -95.0:
+        score = 5
+    elif roi_pct >= -55.0:
+        score = 4
+    else:
+        score = 3
+
+    if franken_fake_risk == "MEDIUM":
+        score = min(score, 8)
+
+    if score <= 4:
+        action = "SCARTA"
+    elif franken_fake_risk == "MEDIUM" or confidence_score < 0.80:
+        action = "CHIEDI_FOTO_FONDELLO"
+    elif score >= 9 and net_margin_eur >= 25.0:
+        action = "COMPRA_SUBITO"
+    else:
+        action = "TRATTA_PREZZO"
+
+    return score, roi_pct, action
+
+
 def apply_canonical_valuation(
     appraisal: WatchAppraisal,
     description_text: str = "",
@@ -123,57 +174,86 @@ def apply_canonical_valuation(
 ) -> WatchAppraisal:
     """
     Ensures `appraisal` uses the canonical market value (min/max EUR) registered for its
-    watch reference or duplicate-listing fingerprint, and recalculates `net_margin_potential_eur`.
+    watch reference or duplicate-listing fingerprint, recalculates `net_margin_potential_eur`,
+    deterministic `deal_score`, `roi_pct`, and sets `is_best_price_for_ref`.
     """
     ref_key = extract_canonical_reference_key(appraisal, description_text)
-    if not ref_key:
-        return appraisal
 
     init_db(db_path)
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            """
-            SELECT canonical_model, canonical_caliber, market_min_eur, market_max_eur, sample_count
-            FROM reference_valuations
-            WHERE ref_key = ?
-            """,
-            (ref_key,),
-        ).fetchone()
+        canon_min = float(appraisal.estimated_market_value_eur_min)
+        canon_max = float(appraisal.estimated_market_value_eur_max)
+        canon_model = appraisal.identified_brand_model
+        canon_caliber = appraisal.estimated_reference_caliber
+        sample_count = 1
 
-        if row is not None:
-            canon_min = float(row["market_min_eur"])
-            canon_max = float(row["market_max_eur"])
-            avg_market = (canon_min + canon_max) / 2.0
-            new_margin = round(avg_market - appraisal.total_vinted_cost_eur, 2)
-            updates: dict = {
+        if ref_key:
+            row = conn.execute(
+                """
+                SELECT canonical_model, canonical_caliber, market_min_eur, market_max_eur, sample_count
+                FROM reference_valuations
+                WHERE ref_key = ?
+                """,
+                (ref_key,),
+            ).fetchone()
+
+            if row is not None:
+                canon_min = float(row["market_min_eur"])
+                canon_max = float(row["market_max_eur"])
+                sample_count = int(row["sample_count"] or 1)
+                if sample_count > 1 or ref_key.startswith("DUP:"):
+                    canon_model = row["canonical_model"]
+                    canon_caliber = row["canonical_caliber"]
+            else:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO reference_valuations
+                            (ref_key, canonical_model, canonical_caliber, market_min_eur, market_max_eur, sample_count)
+                        VALUES (?, ?, ?, ?, ?, 1)
+                        """,
+                        (
+                            ref_key,
+                            canon_model,
+                            canon_caliber,
+                            canon_min,
+                            canon_max,
+                        ),
+                    )
+
+        avg_market = (canon_min + canon_max) / 2.0
+        new_margin = round(avg_market - appraisal.total_vinted_cost_eur, 2)
+        det_score, roi_pct, det_action = compute_deterministic_deal_score(
+            net_margin_eur=new_margin,
+            total_cost_eur=appraisal.total_vinted_cost_eur,
+            is_working_verified=appraisal.is_working_verified,
+            franken_fake_risk=appraisal.franken_fake_risk,
+            confidence_score=appraisal.confidence_score,
+        )
+
+        # Ensure suggested_offer_eur guarantees a positive deal when negotiable
+        suggested_offer = appraisal.suggested_offer_eur
+        if appraisal.is_working_verified and appraisal.franken_fake_risk != "HIGH":
+            target_offer = round(min(appraisal.price_listed_eur * 0.88, avg_market * 0.82), 2)
+            if suggested_offer is None or suggested_offer > appraisal.price_listed_eur:
+                suggested_offer = target_offer
+
+        return appraisal.model_copy(
+            update={
+                "identified_brand_model": canon_model,
+                "estimated_reference_caliber": canon_caliber,
                 "estimated_market_value_eur_min": canon_min,
                 "estimated_market_value_eur_max": canon_max,
                 "net_margin_potential_eur": new_margin,
+                "deal_score": det_score,
+                "recommended_action": det_action,  # type: ignore
+                "suggested_offer_eur": suggested_offer,
+                "canonical_ref_key": ref_key.split("|")[0] if ref_key else None,
+                "roi_pct": roi_pct,
+                "ref_listings_count": max(sample_count, appraisal.ref_listings_count),
             }
-            # For duplicate listings or exact reference matches, keep model/caliber label clean and consistent
-            if ref_key.startswith("DUP:") or row["canonical_caliber"]:
-                updates["identified_brand_model"] = row["canonical_model"]
-                updates["estimated_reference_caliber"] = row["canonical_caliber"]
-            return appraisal.model_copy(update=updates)
-        else:
-            # Register this reference valuation as the canonical anchor
-            with conn:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO reference_valuations
-                        (ref_key, canonical_model, canonical_caliber, market_min_eur, market_max_eur, sample_count)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        ref_key,
-                        appraisal.identified_brand_model,
-                        appraisal.estimated_reference_caliber,
-                        float(appraisal.estimated_market_value_eur_min),
-                        float(appraisal.estimated_market_value_eur_max),
-                    ),
-                )
-            return appraisal
+        )
     finally:
         conn.close()
 
@@ -181,9 +261,9 @@ def apply_canonical_valuation(
 def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
     """
     Scans `appraisal_cache`, groups items that share the same canonical watch reference or
-    duplicate-listing fingerprint (or shared Vinted photo filename), computes a single consensus
-    market valuation (rounded to 5 EUR), updates `reference_valuations`, and rewrites any
-    divergent cached appraisals so identical watches ALWAYS show the exact same market value.
+    duplicate-listing fingerprint, computes a single consensus market valuation (rounded to 5 EUR),
+    determines the lowest price on Vinted for each reference (`is_best_price_for_ref`),
+    flags duplicate seller reposts (`is_duplicate_repost`), and updates `appraisal_cache`.
     """
     init_db(db_path)
     conn = get_connection(db_path)
@@ -193,8 +273,9 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
             "SELECT vinted_id, price_listed_eur, appraisal_json, description_text FROM appraisal_cache"
         ).fetchall()
 
-        parsed_rows: list[tuple[int, float, WatchAppraisal, str, Optional[str]]] = []
+        parsed_rows: list[tuple[int, float, WatchAppraisal, str, Optional[str], str]] = []
         groups: dict[str, list[WatchAppraisal]] = {}
+        dup_groups: dict[str, list[int]] = {}
 
         for r in rows:
             try:
@@ -203,14 +284,18 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
                 continue
             desc = r["description_text"] or ""
             rkey = extract_canonical_reference_key(app, desc)
-            parsed_rows.append((int(r["vinted_id"]), float(r["price_listed_eur"]), app, desc, rkey))
+            norm_desc = re.sub(r"\W+", "", desc.lower())[:100]
+            norm_title = re.sub(r"\W+", "", (app.title or "").lower())
+            dup_fp = f"{norm_title}:{int(round(app.price_listed_eur))}:{norm_desc}" if len(norm_desc) >= 20 else ""
+            if dup_fp:
+                dup_groups.setdefault(dup_fp, []).append(int(r["vinted_id"]))
+            parsed_rows.append((int(r["vinted_id"]), float(r["price_listed_eur"]), app, desc, rkey, dup_fp))
             if rkey:
                 groups.setdefault(rkey, []).append(app)
 
-        # Compute consensus valuation per canonical reference key
-        consensus_map: dict[str, tuple[str, str, float, float]] = {}
+        # Compute consensus valuation & lowest listing price per canonical reference key
+        consensus_map: dict[str, tuple[str, str, float, float, float, int]] = {}
         for rkey, app_list in groups.items():
-            # Average the min and max across samples and round to nearest 5 EUR for cleanhorology pricing
             avg_min = sum(a.estimated_market_value_eur_min for a in app_list) / len(app_list)
             avg_max = sum(a.estimated_market_value_eur_max for a in app_list) / len(app_list)
             canon_min = round(avg_min / 5.0) * 5.0 if avg_min >= 20 else round(avg_min, 2)
@@ -218,17 +303,23 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
             if canon_max <= canon_min:
                 canon_max = canon_min + 25.0
 
-            # Pick the most descriptive model/caliber label
+            lowest_price = min(a.price_listed_eur for a in app_list)
+            # Pick the lowest vinted_id among those tied at lowest_price as the primary best-price card
+            cheapest_candidates = [a for a in app_list if abs(a.price_listed_eur - lowest_price) < 0.01]
+            best_price_vid = min(a.vinted_id for a in cheapest_candidates)
+
             best_app = max(app_list, key=lambda a: (a.confidence_score, len(a.estimated_reference_caliber)))
             consensus_map[rkey] = (
                 best_app.identified_brand_model,
                 best_app.estimated_reference_caliber,
                 float(canon_min),
                 float(canon_max),
+                float(lowest_price),
+                int(best_price_vid),
             )
 
         with conn:
-            for rkey, (c_model, c_cal, c_min, c_max) in consensus_map.items():
+            for rkey, (c_model, c_cal, c_min, c_max, _, _) in consensus_map.items():
                 conn.execute(
                     """
                     INSERT INTO reference_valuations
@@ -245,29 +336,52 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
                     (rkey, c_model, c_cal, c_min, c_max, len(groups[rkey])),
                 )
 
-            for vid, price_eur, app, desc, rkey in parsed_rows:
-                if not rkey or rkey not in consensus_map:
-                    continue
-                c_model, c_cal, c_min, c_max = consensus_map[rkey]
+            for vid, price_eur, app, desc, rkey, dup_fp in parsed_rows:
+                if rkey and rkey in consensus_map:
+                    c_model, c_cal, c_min, c_max, lowest_p, best_vid = consensus_map[rkey]
+                    grp_count = len(groups[rkey])
+                    is_best = bool(grp_count > 1 and vid == best_vid)
+                    ref_short = rkey.split("|")[0]
+                else:
+                    c_model = app.identified_brand_model
+                    c_cal = app.estimated_reference_caliber
+                    c_min = app.estimated_market_value_eur_min
+                    c_max = app.estimated_market_value_eur_max
+                    lowest_p = app.price_listed_eur
+                    grp_count = 1
+                    is_best = False
+                    ref_short = None
+
+                is_dup = bool(dup_fp and len(dup_groups.get(dup_fp, [])) > 1 and vid != min(dup_groups[dup_fp]))
+
                 avg_mkt = (c_min + c_max) / 2.0
                 new_margin = round(avg_mkt - app.total_vinted_cost_eur, 2)
-
-                needs_update = (
-                    abs(app.estimated_market_value_eur_min - c_min) > 0.01
-                    or abs(app.estimated_market_value_eur_max - c_max) > 0.01
-                    or abs(app.net_margin_potential_eur - new_margin) > 0.01
-                    or ( len(groups[rkey]) > 1 and (app.identified_brand_model != c_model or app.estimated_reference_caliber != c_cal) )
+                det_score, roi_pct, det_action = compute_deterministic_deal_score(
+                    net_margin_eur=new_margin,
+                    total_cost_eur=app.total_vinted_cost_eur,
+                    is_working_verified=app.is_working_verified,
+                    franken_fake_risk=app.franken_fake_risk,
+                    confidence_score=app.confidence_score,
                 )
-                if needs_update:
-                    updated_app = app.model_copy(
-                        update={
-                            "identified_brand_model": c_model if len(groups[rkey]) > 1 else app.identified_brand_model,
-                            "estimated_reference_caliber": c_cal if len(groups[rkey]) > 1 else app.estimated_reference_caliber,
-                            "estimated_market_value_eur_min": c_min,
-                            "estimated_market_value_eur_max": c_max,
-                            "net_margin_potential_eur": new_margin,
-                        }
-                    )
+
+                updated_app = app.model_copy(
+                    update={
+                        "identified_brand_model": c_model if grp_count > 1 else app.identified_brand_model,
+                        "estimated_reference_caliber": c_cal if grp_count > 1 else app.estimated_reference_caliber,
+                        "estimated_market_value_eur_min": c_min,
+                        "estimated_market_value_eur_max": c_max,
+                        "net_margin_potential_eur": new_margin,
+                        "deal_score": det_score,
+                        "recommended_action": det_action,  # type: ignore
+                        "canonical_ref_key": ref_short,
+                        "roi_pct": roi_pct,
+                        "is_best_price_for_ref": is_best,
+                        "ref_listings_count": grp_count,
+                        "ref_lowest_price_eur": lowest_p if grp_count > 1 else None,
+                        "is_duplicate_repost": is_dup,
+                    }
+                )
+                if updated_app.model_dump() != app.model_dump():
                     conn.execute(
                         """
                         UPDATE appraisal_cache

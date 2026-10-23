@@ -175,8 +175,32 @@ export default function WatchCard({ item, onEscalateTier3, isEscalating }) {
           </p>
         </div>
 
-        {/* Risk & Solo Marcianti Badges */}
+        {/* Risk & Solo Marcianti & Reference Comparison Badges */}
         <div className="flex flex-wrap items-center gap-2">
+          {item.is_best_price_for_ref && item.ref_listings_count > 1 && (
+            <span
+              data-testid="best-price-ref-badge"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-extrabold bg-gradient-to-r from-amber-500/25 to-emerald-500/20 text-amber-300 border border-amber-400/50 shadow-sm"
+            >
+              🏆 Miglior Prezzo per Referenza (su {item.ref_listings_count} annunci)
+            </span>
+          )}
+
+          {!item.is_best_price_for_ref &&
+            item.ref_listings_count > 1 &&
+            item.ref_lowest_price_eur != null &&
+            item.ref_lowest_price_eur < item.price_listed_eur && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-950/60 text-amber-300 border border-amber-700/50">
+                ⚠️ Stessa Ref. trovata a €{Number(item.ref_lowest_price_eur).toFixed(0)}
+              </span>
+            )}
+
+          {item.is_duplicate_repost && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-purple-950/60 text-purple-300 border border-purple-700/50">
+              🔁 Ripostaggio Duplicato
+            </span>
+          )}
+
           <span
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border ${frankenConfig.classes}`}
           >
@@ -217,20 +241,36 @@ export default function WatchCard({ item, onEscalateTier3, isEscalating }) {
           </div>
         </div>
 
-        {/* Net Margin Potential Bar */}
+        {/* Net Margin Potential & Deterministic ROI Bar */}
         <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900/50 border border-slate-800 text-xs">
           <span className="text-slate-400 flex items-center gap-1.5">
             <Coins className="w-3.5 h-3.5 text-amber-400" />
-            Margine Netto Potenziale:
+            Margine Netto &amp; ROI:
           </span>
-          <span
-            className={`font-bold ${
-              item.net_margin_potential_eur >= 0 ? 'text-emerald-400' : 'text-rose-400'
-            }`}
-          >
-            {item.net_margin_potential_eur >= 0 ? '+' : ''}
-            €{item.net_margin_potential_eur.toFixed(2)}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`font-bold ${
+                item.net_margin_potential_eur >= 0 ? 'text-emerald-400' : 'text-rose-400'
+              }`}
+            >
+              {item.net_margin_potential_eur >= 0 ? '+' : ''}
+              €{item.net_margin_potential_eur.toFixed(2)}
+            </span>
+            {item.roi_pct != null && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                  item.roi_pct >= 15
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                    : item.roi_pct >= 0
+                    ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                    : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                }`}
+              >
+                {item.roi_pct >= 0 ? '+' : ''}
+                {Number(item.roi_pct).toFixed(1)}% ROI
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Technical Collapsible Section */}
