@@ -210,6 +210,7 @@ class MultiProviderLLMRouter:
         user_prompt: str,
         images: Optional[list[dict[str, str]]] = None,
         fallback_generator: Optional[Any] = None,
+        use_search_grounding: bool = False,
     ) -> LLMCallResult:
         """
         Routes a structured JSON request to the configured provider for `tier`.
@@ -232,6 +233,7 @@ class MultiProviderLLMRouter:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     images=images,
+                    use_search_grounding=use_search_grounding,
                 )
                 result.used_fallback = idx > 0
                 return result
@@ -278,10 +280,18 @@ class MultiProviderLLMRouter:
         system_prompt: str,
         user_prompt: str,
         images: Optional[list[dict[str, str]]] = None,
+        use_search_grounding: bool = False,
     ) -> LLMCallResult:
         p = provider.lower().strip()
         if p == "gemini":
-            return await self._call_gemini(model, api_key, system_prompt, user_prompt, images)
+            return await self._call_gemini(
+                model,
+                api_key,
+                system_prompt,
+                user_prompt,
+                images,
+                use_search_grounding=use_search_grounding,
+            )
         if p in ("openai", "groq", "deepseek", "openrouter"):
             return await self._call_openai_compatible(
                 p, model, api_key, system_prompt, user_prompt, images
@@ -299,6 +309,7 @@ class MultiProviderLLMRouter:
         system_prompt: str,
         user_prompt: str,
         images: Optional[list[dict[str, str]]] = None,
+        use_search_grounding: bool = False,
     ) -> LLMCallResult:
         # Map Gemini aliases to currently active Google AI Studio models with automatic fallback
         if "lite" in model:
@@ -327,52 +338,72 @@ class MultiProviderLLMRouter:
                 }
             )
 
-        payload = {
+        payload_standard: dict[str, Any] = {
             "contents": [{"parts": parts}],
             "generationConfig": {
                 "temperature": 0.0,
                 "responseMimeType": "application/json",
             },
         }
+        payload_grounded: dict[str, Any] = {
+            "contents": [{"parts": parts}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {
+                "temperature": 0.0,
+            },
+        }
 
         last_exc: Optional[Exception] = None
-        async with httpx.AsyncClient(timeout=35.0) as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             for api_model in candidate_models:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{api_model}:generateContent?key={api_key}"
-                try:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code in (404, 429, 503):
-                        last_exc = RuntimeError(f"Gemini {api_model} HTTP {resp.status_code}: {resp.text[:200]}")
+                payloads_to_try = (
+                    [(payload_grounded, True), (payload_standard, False)]
+                    if use_search_grounding
+                    else [(payload_standard, False)]
+                )
+                for active_payload, is_grounded in payloads_to_try:
+                    try:
+                        resp = await client.post(url, json=active_payload)
+                        if resp.status_code in (400, 404, 429, 503):
+                            last_exc = RuntimeError(
+                                f"Gemini {api_model} HTTP {resp.status_code}: {resp.text[:200]}"
+                            )
+                            continue
+                        resp.raise_for_status()
+                        data = resp.json()
+
+                        candidates = data.get("candidates") or []
+                        content_parts = candidates[0].get("content", {}).get("parts", [])
+                        text_out = ""
+                        for p in content_parts:
+                            if "text" in p and not p.get("thought", False):
+                                text_out += p["text"] + "\n"
+                        if not text_out.strip() and content_parts:
+                            text_out = content_parts[-1].get("text", "{}")
+
+                        parsed = self.extract_json_object(text_out)
+                        if is_grounded and not parsed:
+                            # If grounded output didn't contain a valid JSON block, retry standard JSON mode
+                            continue
+
+                        usage = data.get("usageMetadata") or {}
+                        in_tok = int(usage.get("promptTokenCount") or 350)
+                        out_tok = int(usage.get("candidatesTokenCount") or 180)
+                        suffix = "LIVE API + Google Search" if is_grounded else "LIVE API"
+                        return LLMCallResult(
+                            content=text_out,
+                            parsed_json=parsed,
+                            provider_used="gemini",
+                            model_used=f"{api_model} ({suffix})",
+                            input_tokens=in_tok,
+                            output_tokens=out_tok,
+                            total_tokens=in_tok + out_tok,
+                            cost_usd=self.compute_cost_usd(api_model, in_tok, out_tok),
+                        )
+                    except Exception as exc:
+                        last_exc = exc
                         continue
-                    resp.raise_for_status()
-                    data = resp.json()
-
-                    candidates = data.get("candidates") or []
-                    content_parts = candidates[0].get("content", {}).get("parts", [])
-                    text_out = ""
-                    for p in content_parts:
-                        if "text" in p and not p.get("thought", False):
-                            text_out = p["text"]
-                    if not text_out and content_parts:
-                        text_out = content_parts[-1].get("text", "{}")
-
-                    usage = data.get("usageMetadata") or {}
-                    in_tok = int(usage.get("promptTokenCount") or 350)
-                    out_tok = int(usage.get("candidatesTokenCount") or 180)
-                    parsed = self.extract_json_object(text_out)
-                    return LLMCallResult(
-                        content=text_out,
-                        parsed_json=parsed,
-                        provider_used="gemini",
-                        model_used=f"{api_model} (LIVE API)",
-                        input_tokens=in_tok,
-                        output_tokens=out_tok,
-                        total_tokens=in_tok + out_tok,
-                        cost_usd=self.compute_cost_usd(api_model, in_tok, out_tok),
-                    )
-                except Exception as exc:
-                    last_exc = exc
-                    continue
 
         raise last_exc or RuntimeError("All Gemini candidate models failed")
 

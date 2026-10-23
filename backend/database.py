@@ -188,6 +188,10 @@ def apply_canonical_valuation(
         canon_caliber = appraisal.estimated_reference_caliber
         sample_count = 1
 
+        is_tier3_grounded = "Google Search" in (appraisal.model_used or "") or (
+            "Tier 3" in (appraisal.tier_reached or "")
+        )
+
         if ref_key:
             row = conn.execute(
                 """
@@ -198,7 +202,32 @@ def apply_canonical_valuation(
                 (ref_key,),
             ).fetchone()
 
-            if row is not None:
+            if is_tier3_grounded:
+                # Tier 3 Senior Arbitrator with Live Market Check is authoritative: update reference_valuations
+                sample_count = int(row["sample_count"] or 1) if row is not None else 1
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO reference_valuations
+                            (ref_key, canonical_model, canonical_caliber, market_min_eur, market_max_eur, sample_count, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(ref_key) DO UPDATE SET
+                            canonical_model = excluded.canonical_model,
+                            canonical_caliber = excluded.canonical_caliber,
+                            market_min_eur = excluded.market_min_eur,
+                            market_max_eur = excluded.market_max_eur,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            ref_key,
+                            canon_model,
+                            canon_caliber,
+                            canon_min,
+                            canon_max,
+                            sample_count,
+                        ),
+                    )
+            elif row is not None:
                 canon_min = float(row["market_min_eur"])
                 canon_max = float(row["market_max_eur"])
                 sample_count = int(row["sample_count"] or 1)
@@ -261,9 +290,10 @@ def apply_canonical_valuation(
 def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
     """
     Scans `appraisal_cache`, groups items that share the same canonical watch reference or
-    duplicate-listing fingerprint, computes a single consensus market valuation (rounded to 5 EUR),
-    determines the lowest price on Vinted for each reference (`is_best_price_for_ref`),
-    flags duplicate seller reposts (`is_duplicate_repost`), and updates `appraisal_cache`.
+    duplicate-listing fingerprint, computes a single consensus market valuation (prioritizing
+    Tier 3 Web-Search-verified valuations), determines the lowest price on Vinted for each
+    reference (`is_best_price_for_ref`), flags duplicate seller reposts (`is_duplicate_repost`),
+    and updates `appraisal_cache`.
     """
     init_db(db_path)
     conn = get_connection(db_path)
@@ -296,19 +326,29 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
         # Compute consensus valuation & lowest listing price per canonical reference key
         consensus_map: dict[str, tuple[str, str, float, float, float, int]] = {}
         for rkey, app_list in groups.items():
-            avg_min = sum(a.estimated_market_value_eur_min for a in app_list) / len(app_list)
-            avg_max = sum(a.estimated_market_value_eur_max for a in app_list) / len(app_list)
+            # Prioritize Tier 3 Google-Search-grounded valuations if present
+            grounded_samples = [a for a in app_list if "Google Search" in (a.model_used or "")]
+            val_samples = grounded_samples if grounded_samples else app_list
+
+            avg_min = sum(a.estimated_market_value_eur_min for a in val_samples) / len(val_samples)
+            avg_max = sum(a.estimated_market_value_eur_max for a in val_samples) / len(val_samples)
             canon_min = round(avg_min / 5.0) * 5.0 if avg_min >= 20 else round(avg_min, 2)
             canon_max = round(avg_max / 5.0) * 5.0 if avg_max >= 20 else round(avg_max, 2)
             if canon_max <= canon_min:
                 canon_max = canon_min + 25.0
 
             lowest_price = min(a.price_listed_eur for a in app_list)
-            # Pick the lowest vinted_id among those tied at lowest_price as the primary best-price card
             cheapest_candidates = [a for a in app_list if abs(a.price_listed_eur - lowest_price) < 0.01]
             best_price_vid = min(a.vinted_id for a in cheapest_candidates)
 
-            best_app = max(app_list, key=lambda a: (a.confidence_score, len(a.estimated_reference_caliber)))
+            best_app = max(
+                val_samples,
+                key=lambda a: (
+                    1 if "Google Search" in (a.model_used or "") else 0,
+                    a.confidence_score,
+                    len(a.estimated_reference_caliber),
+                ),
+            )
             consensus_map[rkey] = (
                 best_app.identified_brand_model,
                 best_app.estimated_reference_caliber,

@@ -202,7 +202,32 @@ export default function App() {
         const upgraded = await resp.json()
         setItems((prev) =>
           prev
-            .map((it) => (it.vinted_id === upgraded.vinted_id ? upgraded : it))
+            .map((it) => {
+              if (it.vinted_id === upgraded.vinted_id) return upgraded
+              if (
+                upgraded.canonical_ref_key &&
+                it.canonical_ref_key === upgraded.canonical_ref_key &&
+                it.is_working_verified === upgraded.is_working_verified &&
+                it.franken_fake_risk === upgraded.franken_fake_risk
+              ) {
+                const avgMkt =
+                  (upgraded.estimated_market_value_eur_min +
+                    upgraded.estimated_market_value_eur_max) /
+                  2.0
+                const newMargin = Number((avgMkt - it.total_vinted_cost_eur).toFixed(2))
+                const newRoi = Number(
+                  ((newMargin / Math.max(it.total_vinted_cost_eur, 1)) * 100).toFixed(1)
+                )
+                return {
+                  ...it,
+                  estimated_market_value_eur_min: upgraded.estimated_market_value_eur_min,
+                  estimated_market_value_eur_max: upgraded.estimated_market_value_eur_max,
+                  net_margin_potential_eur: newMargin,
+                  roi_pct: newRoi,
+                }
+              }
+              return it
+            })
             .sort((a, b) => b.deal_score - a.deal_score)
         )
         setTelemetry((prev) => ({

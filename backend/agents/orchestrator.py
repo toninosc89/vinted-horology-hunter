@@ -296,7 +296,13 @@ class HorologyMASOrchestrator:
         upgraded = save_cached_appraisal(
             upgraded, description_text=desc, db_path=self.db_path
         )
-        return upgraded
+        reconcile_all_cached_appraisals(db_path=self.db_path)
+        return (
+            get_cached_appraisal(
+                upgraded.vinted_id, upgraded.price_listed_eur, db_path=self.db_path
+            )
+            or upgraded
+        )
 
     async def analyze_single_url(
         self,
