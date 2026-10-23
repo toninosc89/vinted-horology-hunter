@@ -66,6 +66,7 @@ class HorologyMASOrchestrator:
             search_text=request.query,
             price_to=request.max_price,
             per_page=request.max_items,
+            sort_order=request.sort_order,
         )
         telemetry.source_mode = self.vinted_client.last_source_mode
         telemetry.items_extracted = len(catalog_items)

@@ -307,46 +307,43 @@ class VintedClient:
         price_to: Optional[float] = None,
         per_page: int = 20,
         page: int = 1,
+        sort_order: str = "smart_relevance",
     ) -> list[CatalogItem]:
         """
-        Stage 1 - Catalog Search (GET https://www.vinted.it/api/v2/catalog/items).
-        Automatically performs cookie handshake on init and retries once on 401/403.
-        Falls back cleanly to realistic horology listings if Vinted blocks sandbox network.
+        Stage 1 - Catalog Search.
+        Supports direct Vinted item URLs (https://www.vinted.it/items/10298557299-...)
+        as well as hybrid relevance + newest_first catalog scraping.
         """
         await self.handshake()
-        session = await self._get_session()
 
-        params: dict[str, Any] = {
-            "search_text": search_text,
-            "catalog[]": ["97", "22"],
-            "order": "newest_first",
-            "per_page": min(max(per_page, 1), 96),
-            "page": page,
-            "currency": "EUR",
-        }
-        if price_to is not None and price_to > 0:
-            params["price_to"] = str(price_to)
-
-        for attempt in range(2):
-            try:
-                resp = await session.get(VINTED_CATALOG_API, params=params)
-                if resp.status_code in (401, 403) and attempt == 0:
-                    logger.info("Catalog returned %s; re-running handshake...", resp.status_code)
-                    await self.handshake(force=True)
-                    continue
-
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    raw_items = payload.get("items") or []
-                    if isinstance(raw_items, list) and len(raw_items) > 0:
-                        self.last_source_mode = "live"
-                        normalized = [self.normalize_catalog_item(item) for item in raw_items]
-                        if price_to is not None and price_to > 0:
-                            normalized = [i for i in normalized if i.price <= price_to]
-                        return normalized[:per_page]
-                break
-            except Exception as exc:
-                logger.warning("Stage 1 catalog API attempt %d failed: %s", attempt + 1, exc)
+        # Check if user pasted a direct Vinted item URL
+        url_id_match = re.search(r"vinted\.[a-z]+/items/(\d+)", search_text, re.IGNORECASE)
+        if url_id_match:
+            direct_id = int(url_id_match.group(1))
+            clean_url = search_text.strip().split("?")[0]
+            stub = CatalogItem(
+                id=direct_id,
+                title=f"Orologio Vinted #{direct_id}",
+                price=0.0,
+                brand_title="",
+                status="Ottimo",
+                url=clean_url,
+            )
+            deep = await self.fetch_deep_item(direct_id, stage1_fallback=stub, enforce_jitter=False)
+            self.last_source_mode = "live"
+            return [
+                CatalogItem(
+                    id=deep.id,
+                    title=deep.title,
+                    price=deep.price,
+                    brand_title=deep.brand_title,
+                    status=deep.status,
+                    url=deep.url,
+                    photo_url=deep.photo_urls[0] if deep.photo_urls else "",
+                    extra_photo_urls=deep.photo_urls[:4],
+                    description_snippet=deep.description,
+                )
+            ]
 
         # Stage 1B - Live Vinted.it Next.js SSR Catalog Scraper (/catalog?search_text=...)
         try:
@@ -355,6 +352,7 @@ class VintedClient:
                 price_to=price_to,
                 per_page=per_page,
                 page=page,
+                sort_order=sort_order,
             )
             if ssr_items:
                 self.last_source_mode = "live"
@@ -375,101 +373,127 @@ class VintedClient:
         price_to: Optional[float],
         per_page: int,
         page: int = 1,
+        sort_order: str = "smart_relevance",
     ) -> list[CatalogItem]:
         """
         Extracts real live Vinted.it listings from https://www.vinted.it/catalog Next.js SSR payload,
         strictly filtered to Vinted's Wristwatch categories (catalog[]=97 Men's Watches, catalog[]=22 Women's Watches).
+        When sort_order='smart_relevance', merges Vinted 'relevance' and 'newest_first' and prioritizes
+        items matching all query keywords in title/brand (e.g. 'Orient Star' before generic 'Orient').
         """
         session = await self._get_session()
-        params: dict[str, Any] = {
-            "search_text": search_text,
-            "catalog[]": ["97", "22"],
-            "order": "newest_first",
-            "page": page,
-            "currency": "EUR",
-        }
-        if price_to is not None and price_to > 0:
-            params["price_to"] = str(int(price_to) if price_to.is_integer() else price_to)
+
+        if sort_order == "newest_first":
+            orders_to_fetch = ["newest_first"]
+        elif sort_order == "relevance":
+            orders_to_fetch = ["relevance"]
+        else:
+            orders_to_fetch = ["relevance", "newest_first"]
 
         nav_headers = {
             **ITALIAN_BROWSER_HEADERS,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
-        resp = await session.get(f"{VINTED_BASE_URL}/catalog", params=params, headers=nav_headers)
-        if resp.status_code != 200 or not resp.content:
-            return []
 
-        # Decode UTF-8 explicitly and unescape Next.js RSC escaped quotes (\" -> ")
-        raw_html = resp.content.decode("utf-8", errors="replace")
-        unescaped = raw_html.replace('\\"', '"').replace("\\/", "/")
+        async def _fetch_order(order_mode: str) -> str:
+            params: dict[str, Any] = {
+                "search_text": search_text,
+                "catalog[]": ["97", "22"],
+                "order": order_mode,
+                "page": page,
+                "currency": "EUR",
+            }
+            if price_to is not None and price_to > 0:
+                params["price_to"] = str(int(price_to) if float(price_to).is_integer() else price_to)
+            resp = await session.get(f"{VINTED_BASE_URL}/catalog", params=params, headers=nav_headers)
+            if resp.status_code != 200 or not resp.content:
+                return ""
+            return resp.content.decode("utf-8", errors="replace")
+
+        pages_html = await asyncio.gather(*[_fetch_order(o) for o in orders_to_fetch])
 
         results: list[CatalogItem] = []
         seen_ids: set[int] = set()
 
-        # Match productItem blocks in Next.js payload
         pattern = re.compile(
             r'"productItem":\{"id":(\d+),"title":"([^"]+)","url":"([^"]+)".*?'
             r'"price":\{"amount":"([\d.,]+)","currencyCode":"[A-Z]+"\}',
             re.DOTALL,
         )
 
-        for match in pattern.finditer(unescaped):
-            item_id = int(match.group(1))
-            if item_id in seen_ids:
+        for raw_html in pages_html:
+            if not raw_html:
                 continue
+            unescaped = raw_html.replace('\\"', '"').replace("\\/", "/")
 
-            title = html.unescape(match.group(2)).strip()
-            rel_url = match.group(3).strip()
-            full_url = f"{VINTED_BASE_URL}{rel_url}" if rel_url.startswith("/") else rel_url
-            try:
-                price = round(float(match.group(4).replace(",", ".")), 2)
-            except ValueError:
-                price = 0.0
+            for match in pattern.finditer(unescaped):
+                item_id = int(match.group(1))
+                if item_id in seen_ids:
+                    continue
 
-            if price_to is not None and price_to > 0 and price > price_to:
-                continue
+                title = html.unescape(match.group(2)).strip()
+                rel_url = match.group(3).strip()
+                full_url = f"{VINTED_BASE_URL}{rel_url}" if rel_url.startswith("/") else rel_url
+                try:
+                    price = round(float(match.group(4).replace(",", ".")), 2)
+                except ValueError:
+                    price = 0.0
 
-            # Inspect the ~2500 characters following the match for photo URLs, brand (firstLine), and condition (secondLine)
-            window = unescaped[match.start() : match.end() + 2600]
+                if price_to is not None and price_to > 0 and price > price_to:
+                    continue
 
-            photo_matches = re.findall(
-                r'https://images\d*\.vinted\.net/t/[a-zA-Z0-9_/-]+/f800/[a-zA-Z0-9_.?=&%-]+',
-                window,
-            )
-            if not photo_matches:
+                window = unescaped[match.start() : match.end() + 2600]
+
                 photo_matches = re.findall(
-                    r'https://images\d*\.vinted\.net/t/[a-zA-Z0-9_/-]+/310x430/[a-zA-Z0-9_.?=&%-]+',
+                    r'https://images\d*\.vinted\.net/t/[a-zA-Z0-9_/-]+/f800/[a-zA-Z0-9_.?=&%-]+',
                     window,
                 )
-            unique_photos = list(dict.fromkeys(photo_matches))[:4]
-            primary_photo = unique_photos[0] if unique_photos else ""
+                if not photo_matches:
+                    photo_matches = re.findall(
+                        r'https://images\d*\.vinted\.net/t/[a-zA-Z0-9_/-]+/310x430/[a-zA-Z0-9_.?=&%-]+',
+                        window,
+                    )
+                unique_photos = list(dict.fromkeys(photo_matches))[:4]
+                primary_photo = unique_photos[0] if unique_photos else ""
 
-            brand_match = re.search(r'"firstLine":"([^"]*)"', window)
-            brand_title = html.unescape(brand_match.group(1)).strip() if brand_match else ""
+                brand_match = re.search(r'"firstLine":"([^"]*)"', window)
+                brand_title = html.unescape(brand_match.group(1)).strip() if brand_match else ""
 
-            second_match = re.search(r'"secondLine":"([^"]*)"', window)
-            second_line = html.unescape(second_match.group(1)).strip() if second_match else ""
-            # secondLine is typically "39–42 mm · Ottime" or "Buone"
-            status = second_line.split("·")[-1].strip() if "·" in second_line else (second_line or "Buone")
+                second_match = re.search(r'"secondLine":"([^"]*)"', window)
+                second_line = html.unescape(second_match.group(1)).strip() if second_match else ""
+                status = second_line.split("·")[-1].strip() if "·" in second_line else (second_line or "Buone")
 
-            seen_ids.add(item_id)
-            results.append(
-                CatalogItem(
-                    id=item_id,
-                    title=title,
-                    price=price,
-                    brand_title=brand_title,
-                    status=status,
-                    url=full_url,
-                    photo_url=primary_photo,
-                    extra_photo_urls=unique_photos,
-                    description_snippet="",
+                seen_ids.add(item_id)
+                results.append(
+                    CatalogItem(
+                        id=item_id,
+                        title=title,
+                        price=price,
+                        brand_title=brand_title,
+                        status=status,
+                        url=full_url,
+                        photo_url=primary_photo,
+                        extra_photo_urls=unique_photos,
+                        description_snippet="",
+                    )
                 )
-            )
-            if len(results) >= per_page:
-                break
 
-        return results
+        # Prioritize items whose title+brand contains all query tokens (so 'Orient Star' beats generic 'Orient')
+        query_tokens = [
+            tok.lower()
+            for tok in re.split(r"\W+", search_text.strip())
+            if len(tok) >= 2 and tok.lower() not in {"orologio", "montre", "watch", "reloj", "vintage"}
+        ]
+        if query_tokens and sort_order != "newest_first":
+            def _keyword_score(item: CatalogItem) -> int:
+                blob = f"{item.title} {item.brand_title}".lower()
+                matched = sum(1 for tok in query_tokens if tok in blob)
+                exact_phrase = 2 if search_text.strip().lower() in blob else 0
+                return matched * 10 + exact_phrase
+
+            results.sort(key=_keyword_score, reverse=True)
+
+        return results[:per_page]
 
     async def fetch_deep_item(
         self,
@@ -593,10 +617,26 @@ class VintedClient:
         if not description and not photos:
             return None
 
+        unescaped_quotes = unescaped.replace('\\"', '"')
+        parsed_title = stage1_fallback.title if (stage1_fallback and not stage1_fallback.title.startswith("Orologio Vinted #")) else ""
+        if not parsed_title:
+            t_match = re.search(r"<title>([^<|]+)", html_text, re.IGNORECASE)
+            if t_match:
+                parsed_title = html.unescape(t_match.group(1)).strip()
+
+        parsed_price = stage1_fallback.price if (stage1_fallback and stage1_fallback.price > 0) else 0.0
+        if parsed_price <= 0:
+            p_match = re.search(r'"price":\{"amount":"([\d.,]+)"', unescaped_quotes)
+            if p_match:
+                try:
+                    parsed_price = round(float(p_match.group(1).replace(",", ".")), 2)
+                except ValueError:
+                    parsed_price = 100.0
+
         return DeepItemData(
             id=item_id,
-            title=stage1_fallback.title if stage1_fallback else f"Orologio #{item_id}",
-            price=stage1_fallback.price if stage1_fallback else 0.0,
+            title=parsed_title or f"Orologio #{item_id}",
+            price=parsed_price,
             brand_title=stage1_fallback.brand_title if stage1_fallback else "",
             status=stage1_fallback.status if stage1_fallback else "Ottimo",
             url=stage1_fallback.url if stage1_fallback else f"{VINTED_BASE_URL}/items/{item_id}",

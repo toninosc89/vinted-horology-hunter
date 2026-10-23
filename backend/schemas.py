@@ -90,8 +90,9 @@ class PipelineTelemetry(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(default="seiko vintage", min_length=1)
-    max_price: Optional[float] = Field(default=250.0, gt=0)
-    max_items: int = Field(default=16, ge=1, le=50)
+    max_price: Optional[float] = Field(default=500.0, gt=0)
+    max_items: int = Field(default=12, ge=1, le=50)
+    sort_order: str = Field(default="smart_relevance")
     only_verified_working: bool = Field(default=False)
     bypass_cache: bool = Field(default=False)
 

@@ -25,8 +25,9 @@ const PRESET_QUERIES = [
 
 export default function App() {
   const [query, setQuery] = useState('Seiko Vintage')
-  const [maxPrice, setMaxPrice] = useState(250)
+  const [maxPrice, setMaxPrice] = useState(500)
   const [maxItems, setMaxItems] = useState(12)
+  const [sortOrder, setSortOrder] = useState('smart_relevance')
   const [onlyVerifiedWorking, setOnlyVerifiedWorking] = useState(false)
   const [bypassCache, setBypassCache] = useState(false)
 
@@ -63,17 +64,17 @@ export default function App() {
     openrouter_api_key: '',
     ollama_base_url: 'http://localhost:11434',
     tier1_provider: 'gemini',
-    tier1_model: 'gemini-2.5-flash-lite',
+    tier1_model: 'gemini-3.1-flash-lite-preview',
     tier2_provider: 'gemini',
-    tier2_model: 'gemini-2.5-flash',
+    tier2_model: 'gemini-3-flash-preview',
     tier3_provider: 'gemini',
-    tier3_model: 'gemini-4-argon',
+    tier3_model: 'gemini-3-flash-preview',
     auto_optimize_enabled: true,
   })
 
   useEffect(() => {
     fetchSettings()
-    executeScan('Seiko Vintage', 250, 12, false)
+    executeScan('Seiko Vintage', 500, 12, false, 'smart_relevance')
   }, [])
 
   const fetchSettings = async () => {
@@ -92,7 +93,8 @@ export default function App() {
     qOverride = query,
     priceOverride = maxPrice,
     itemsOverride = maxItems,
-    forceBypass = bypassCache
+    forceBypass = bypassCache,
+    orderOverride = sortOrder
   ) => {
     setLoading(true)
     setErrorMsg('')
@@ -104,6 +106,7 @@ export default function App() {
           query: qOverride,
           max_price: Number(priceOverride) > 0 ? Number(priceOverride) : null,
           max_items: Number(itemsOverride) || 12,
+          sort_order: orderOverride,
           only_verified_working: false,
           bypass_cache: Boolean(forceBypass),
         }),
@@ -125,12 +128,12 @@ export default function App() {
 
   const handleSearchSubmit = (e) => {
     e.preventDefault()
-    executeScan(query, maxPrice, maxItems, bypassCache)
+    executeScan(query, maxPrice, maxItems, bypassCache, sortOrder)
   }
 
   const handlePresetClick = (preset) => {
     setQuery(preset)
-    executeScan(preset, maxPrice, maxItems, bypassCache)
+    executeScan(preset, maxPrice, maxItems, bypassCache, sortOrder)
   }
 
   const handleEscalateTier3 = async (watchItem) => {
@@ -254,11 +257,11 @@ export default function App() {
       <main className="max-w-7xl mx-auto w-full px-4 sm:px-8 py-6 space-y-6 flex-1">
         {/* 1. Top Search & Filter Bar */}
         <section className="bg-[#111827] border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-          <form onSubmit={handleSearchSubmit} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-            {/* Search Query Input */}
-            <div className="md:col-span-5">
+          <form onSubmit={handleSearchSubmit} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            {/* Search Query Input (or direct Vinted URL) */}
+            <div className="md:col-span-4">
               <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                Ricerca Orologio su Vinted.it
+                Ricerca Orologio o Link Diretto Vinted.it
               </label>
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -267,10 +270,26 @@ export default function App() {
                   data-testid="search-query-input"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="es. seiko vintage, orient star, citizen promaster..."
+                  placeholder="es. orient star oppure incolla URL vinted.it/items/..."
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-amber-500 focus:outline-none text-sm text-white"
                 />
               </div>
+            </div>
+
+            {/* Sort Order */}
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Ordinamento Vinted
+              </label>
+              <select
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+                className="w-full px-2.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-amber-500 focus:outline-none text-xs text-white"
+              >
+                <option value="smart_relevance">Smart (Pertinenza + Nuovi)</option>
+                <option value="relevance">Più Pertinenti (Default Vinted)</option>
+                <option value="newest_first">Più Recenti ( Ultimi Caricati)</option>
+              </select>
             </div>
 
             {/* Max Price (€) */}
@@ -281,8 +300,8 @@ export default function App() {
               <input
                 type="number"
                 min="10"
-                max="5000"
-                step="5"
+                max="10000"
+                step="10"
                 value={maxPrice}
                 onChange={(e) => setMaxPrice(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-amber-500 focus:outline-none text-sm text-white font-mono"
@@ -290,9 +309,9 @@ export default function App() {
             </div>
 
             {/* Max Items */}
-            <div className="md:col-span-2">
+            <div className="md:col-span-1">
               <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                Numero Max Annunci
+                Max Item
               </label>
               <input
                 type="number"
@@ -300,7 +319,7 @@ export default function App() {
                 max="50"
                 value={maxItems}
                 onChange={(e) => setMaxItems(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-amber-500 focus:outline-none text-sm text-white font-mono"
+                className="w-full px-2.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-amber-500 focus:outline-none text-sm text-white font-mono"
               />
             </div>
 
