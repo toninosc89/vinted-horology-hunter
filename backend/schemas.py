@@ -122,3 +122,10 @@ class LLMRouterSettings(BaseModel):
 class Tier3EscalationRequest(BaseModel):
     appraisal: Optional[WatchAppraisal] = None
     description: Optional[str] = None
+
+
+class AnalyzeUrlRequest(BaseModel):
+    url: str = Field(..., min_length=3)
+    run_tier3: bool = Field(default=False)
+    bypass_cache: bool = Field(default=True)
+

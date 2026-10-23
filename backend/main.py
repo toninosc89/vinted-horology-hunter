@@ -15,6 +15,7 @@ from backend.database import (
     save_router_settings,
 )
 from backend.schemas import (
+    AnalyzeUrlRequest,
     LLMRouterSettings,
     SearchRequest,
     SearchResponse,
@@ -73,6 +74,24 @@ async def run_watch_search(request: SearchRequest) -> SearchResponse:
         enforce_stage2_jitter=False,
     )
     return await orchestrator.execute_search_pipeline(request)
+
+
+@app.post("/api/analyze-url", response_model=WatchAppraisal)
+async def analyze_single_vinted_url(request: AnalyzeUrlRequest) -> WatchAppraisal:
+    settings = load_router_settings()
+    orchestrator = HorologyMASOrchestrator(
+        settings=settings,
+        vinted_client=shared_vinted_client,
+        enforce_stage2_jitter=False,
+    )
+    try:
+        return await orchestrator.analyze_single_url(
+            raw_url=request.url,
+            run_tier3=request.run_tier3,
+            bypass_cache=request.bypass_cache,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/tier3/{vinted_id}", response_model=WatchAppraisal)

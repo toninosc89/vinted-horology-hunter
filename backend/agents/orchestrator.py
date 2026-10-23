@@ -284,3 +284,77 @@ class HorologyMASOrchestrator:
             upgraded, description_text=desc, db_path=self.db_path
         )
         return upgraded
+
+    async def analyze_single_url(
+        self,
+        raw_url: str,
+        run_tier3: bool = False,
+        bypass_cache: bool = True,
+    ) -> WatchAppraisal:
+        """
+        Dedicated Direct Link Analyzer: scrapes a single Vinted item URL (or numeric ID),
+        downloads high-res photos, runs Tier 2 Vision Appraisal, and optionally escalates
+        immediately to Tier 3 Senior Arbitrator.
+        """
+        import re
+
+        cleaned = raw_url.strip()
+        id_match = re.search(r"vinted\.[a-z]+/items/(\d+)", cleaned, re.IGNORECASE)
+        if id_match:
+            item_id = int(id_match.group(1))
+            page_url = cleaned.split("?")[0]
+        elif cleaned.isdigit():
+            item_id = int(cleaned)
+            page_url = f"https://www.vinted.it/items/{item_id}"
+        else:
+            raise ValueError(
+                "Inserisci un link Vinted valido (es. https://www.vinted.it/items/10298557299-...) oppure l'ID numerico dell'annuncio."
+            )
+
+        if not bypass_cache and not run_tier3:
+            cached = get_cached_appraisal(item_id, db_path=self.db_path)
+            if cached is not None:
+                return cached
+
+        stub = CatalogItem(
+            id=item_id,
+            title=f"Orologio Vinted #{item_id}",
+            price=0.0,
+            brand_title="",
+            status="Ottimo",
+            url=page_url,
+        )
+        deep_item = await self.vinted_client.fetch_deep_item(
+            item_id=item_id,
+            stage1_fallback=stub,
+            enforce_jitter=False,
+        )
+
+        images_b64 = await self.vinted_client.download_images_as_base64(
+            deep_item.photo_urls, max_images=3
+        )
+
+        appraisal = await self.tier2.appraise_item(
+            deep_item=deep_item,
+            images_b64=images_b64,
+        )
+
+        if run_tier3 or self.tier3.should_auto_escalate(appraisal):
+            appraisal = await self.tier3.arbitrate(
+                appraisal=appraisal,
+                description=deep_item.description,
+                images_b64=images_b64,
+                trigger_mode="Analisi Link Diretto",
+            )
+        else:
+            appraisal = appraisal.model_copy(
+                update={"tier_reached": f"{appraisal.tier_reached} • Link Diretto"}
+            )
+
+        save_cached_appraisal(
+            appraisal,
+            description_text=deep_item.description,
+            db_path=self.db_path,
+        )
+        return appraisal
+

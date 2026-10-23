@@ -12,6 +12,8 @@ import {
   Zap,
   ArrowRight,
   RefreshCw,
+  Link2,
+  Sparkles,
 } from 'lucide-react'
 import WatchCard from './components/WatchCard.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
@@ -30,6 +32,12 @@ export default function App() {
   const [sortOrder, setSortOrder] = useState('smart_relevance')
   const [onlyVerifiedWorking, setOnlyVerifiedWorking] = useState(false)
   const [bypassCache, setBypassCache] = useState(false)
+
+  // Dedicated state for Single Vinted Link Analyzer
+  const [customUrl, setCustomUrl] = useState('')
+  const [customUrlTier3, setCustomUrlTier3] = useState(false)
+  const [analyzingUrl, setAnalyzingUrl] = useState(false)
+  const [lastDirectAppraisalId, setLastDirectAppraisalId] = useState(null)
 
   const [items, setItems] = useState([])
   const [telemetry, setTelemetry] = useState({
@@ -131,6 +139,52 @@ export default function App() {
     executeScan(query, maxPrice, maxItems, bypassCache, sortOrder)
   }
 
+  const handleAnalyzeUrl = async (e) => {
+    e.preventDefault()
+    if (!customUrl.trim()) return
+    setAnalyzingUrl(true)
+    setErrorMsg('')
+    try {
+      const resp = await fetch('/api/analyze-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: customUrl.trim(),
+          run_tier3: Boolean(customUrlTier3),
+          bypass_cache: true,
+        }),
+      })
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}))
+        throw new Error(errData.detail || `Errore nell'analisi del link (${resp.status})`)
+      }
+      const appraisal = await resp.json()
+      setLastDirectAppraisalId(appraisal.vinted_id)
+      setItems((prev) => [
+        appraisal,
+        ...prev.filter((it) => it.vinted_id !== appraisal.vinted_id),
+      ])
+      setTelemetry((prev) => ({
+        ...prev,
+        appraised_tier2: (prev.appraised_tier2 || 0) + 1,
+        escalated_tier3:
+          (prev.escalated_tier3 || 0) + (customUrlTier3 ? 1 : 0),
+        total_tokens_used: (prev.total_tokens_used || 0) + (appraisal.tokens_used || 0),
+        total_cost_usd: Number(
+          ((prev.total_cost_usd || 0) + (appraisal.cost_usd || 0)).toFixed(6)
+        ),
+        total_cost_eur: Number(
+          (((prev.total_cost_usd || 0) + (appraisal.cost_usd || 0)) * 0.92).toFixed(6)
+        ),
+      }))
+      setCustomUrl('')
+    } catch (err) {
+      setErrorMsg(err.message || 'Impossibile analizzare il link Vinted indicato')
+    } finally {
+      setAnalyzingUrl(false)
+    }
+  }
+
   const handlePresetClick = (preset) => {
     setQuery(preset)
     executeScan(preset, maxPrice, maxItems, bypassCache, sortOrder)
@@ -197,12 +251,19 @@ export default function App() {
 
   const displayedItems = useMemo(() => {
     const filtered = onlyVerifiedWorking
-      ? items.filter((item) => item.is_working_verified && item.deal_score >= 6)
+      ? items.filter(
+          (item) =>
+            (item.is_working_verified && item.deal_score >= 6) ||
+            item.vinted_id === lastDirectAppraisalId ||
+            (item.tier_reached && item.tier_reached.includes('Link Diretto'))
+        )
       : items
-    return [...filtered].sort(
-      (a, b) => b.deal_score - a.deal_score || b.net_margin_potential_eur - a.net_margin_potential_eur
-    )
-  }, [items, onlyVerifiedWorking])
+    return [...filtered].sort((a, b) => {
+      if (a.vinted_id === lastDirectAppraisalId) return -1
+      if (b.vinted_id === lastDirectAppraisalId) return 1
+      return b.deal_score - a.deal_score || b.net_margin_potential_eur - a.net_margin_potential_eur
+    })
+  }, [items, onlyVerifiedWorking, lastDirectAppraisalId])
 
   const totalTier0Discarded =
     (telemetry.discarded_tier0_regex || 0) + (telemetry.discarded_tier0_condition || 0)
@@ -394,6 +455,83 @@ export default function App() {
               </label>
             </div>
           </div>
+        </section>
+
+        {/* 1B. Analisi Istantanea Singolo Link Vinted */}
+        <section
+          data-testid="direct-url-analyzer"
+          className="bg-gradient-to-r from-[#131b2e] via-[#161f36] to-[#1a1630] border border-purple-500/30 rounded-2xl p-4 sm:p-5 shadow-xl"
+        >
+          <form
+            onSubmit={handleAnalyzeUrl}
+            className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center"
+          >
+            <div className="lg:col-span-3 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center shrink-0">
+                <Link2 className="w-5 h-5 text-purple-300" />
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <h2 className="text-sm font-extrabold text-white">
+                    Analizza un Link Vinted
+                  </h2>
+                  <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    On-Demand
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Incolla l&apos;URL di un annuncio specifico per eseguire subito la perizia visiva + stima calibro
+                </p>
+              </div>
+            </div>
+
+            <div className="lg:col-span-5">
+              <div className="relative">
+                <Link2 className="w-4 h-4 text-purple-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  data-testid="custom-vinted-url-input"
+                  value={customUrl}
+                  onChange={(e) => setCustomUrl(e.target.value)}
+                  placeholder="Incolla link Vinted (es. https://www.vinted.it/items/10298557299-relogio-orient-star...)"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950/90 border border-purple-500/40 focus:border-purple-400 focus:outline-none text-xs sm:text-sm text-white"
+                />
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 flex items-center justify-start lg:justify-center">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none text-xs text-purple-200">
+                <input
+                  type="checkbox"
+                  checked={customUrlTier3}
+                  onChange={(e) => setCustomUrlTier3(e.target.checked)}
+                  className="w-4 h-4 rounded accent-purple-500"
+                />
+                <span>Includi Perizia Forense Tier 3</span>
+              </label>
+            </div>
+
+            <div className="lg:col-span-2">
+              <button
+                type="submit"
+                disabled={analyzingUrl || !customUrl.trim()}
+                data-testid="analyze-url-btn"
+                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-500 to-amber-500 hover:from-purple-400 hover:to-amber-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition"
+              >
+                {analyzingUrl ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Perizia in corso...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    <span>Analizza Link</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
         </section>
 
         {/* 2. Live Pipeline & FinOps Telemetry Bar */}
