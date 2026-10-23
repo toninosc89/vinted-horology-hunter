@@ -28,7 +28,7 @@ TIER0_NON_WATCH_PATTERN = re.compile(
     r"("
     r"^\s*(cinturino|cinturini|bracciale\s+cinturino|bracelet\s+de\s+montre|correa|scatola|bo[iî]te|estuche|maglia\s+bracciale)\b|"
     r"\b(solo\s+cinturino|cinturino\s+orologio|cinturino\s+per\s+orologio|cinturino\s+ricambio|"
-    r"solo\s+scatola|scatola\s+vuota|scatola\s+orologio|scatola\s+porta|porta\s+orologi|portaorologi|"
+    r"solo\s+scatola|scatola\s+vuota|scatola\s+orologio|scatola\s+per\s+orolog[io]|scatola\s+porta|porta\s+orologi|portaorologi|"
     r"cofanetto\s+orologio|maglie\s+bracciale|maglia\s+di\s+ricambio|libretto\s+istruzioni|"
     r"orologio\s+da\s+parete|orologio\s+da\s+tavolo|sveglia\s+da\s+tavolo|"
     r"t-shirt|maglietta|felpa|pantaloni|jeans|scarpe|sneakers|giacca|cappotto|camicia|vestito|"

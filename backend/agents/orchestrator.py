@@ -61,21 +61,26 @@ class HorologyMASOrchestrator:
         start_ts = time.perf_counter()
         telemetry = PipelineTelemetry(query=request.query)
 
-        # Stage 1: Fetch catalog items from Vinted
+        # Stage 1: Fetch pool of catalog items from Vinted so Tier 0 rejections don't eat into max_items
+        fetch_pool_size = min(max(request.max_items * 2, 24), 60)
         catalog_items = await self.vinted_client.search_catalog(
             search_text=request.query,
             price_to=request.max_price,
-            per_page=request.max_items,
+            per_page=fetch_pool_size,
             sort_order=request.sort_order,
         )
         telemetry.source_mode = self.vinted_client.last_source_mode
-        telemetry.items_extracted = len(catalog_items)
 
-        # Tier 0: Deterministic Guardrail & Cache Check
+        # Tier 0: Deterministic Guardrail & Cache Check (until we fill request.max_items valid candidates)
         surviving_tier0: list[CatalogItem] = []
         final_appraisals: list[WatchAppraisal] = []
+        inspected_count = 0
 
         for item in catalog_items:
+            if len(surviving_tier0) + len(final_appraisals) >= request.max_items:
+                break
+            inspected_count += 1
+
             ok_regex, reason_regex = Tier0Guardrail.check_text_blacklist(
                 item.title, item.status, item.description_snippet
             )
@@ -118,6 +123,8 @@ class HorologyMASOrchestrator:
                     continue
 
             surviving_tier0.append(item)
+
+        telemetry.items_extracted = inspected_count
 
         # Tier 1: Batch Triage Screener (up to 20 surviving items)
         approved_items: list[CatalogItem] = []

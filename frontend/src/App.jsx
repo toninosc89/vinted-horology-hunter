@@ -26,7 +26,7 @@ const PRESET_QUERIES = [
 export default function App() {
   const [query, setQuery] = useState('Seiko Vintage')
   const [maxPrice, setMaxPrice] = useState(500)
-  const [maxItems, setMaxItems] = useState(12)
+  const [maxItems, setMaxItems] = useState(16)
   const [sortOrder, setSortOrder] = useState('smart_relevance')
   const [onlyVerifiedWorking, setOnlyVerifiedWorking] = useState(false)
   const [bypassCache, setBypassCache] = useState(false)
@@ -74,7 +74,7 @@ export default function App() {
 
   useEffect(() => {
     fetchSettings()
-    executeScan('Seiko Vintage', 500, 12, false, 'smart_relevance')
+    executeScan('Seiko Vintage', 500, 16, false, 'smart_relevance')
   }, [])
 
   const fetchSettings = async () => {
