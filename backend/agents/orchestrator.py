@@ -10,9 +10,11 @@ from backend.agents.tier1_screener import Tier1BatchScreener
 from backend.agents.tier2_appraiser import Tier2MultimodalAppraiser
 from backend.agents.tier3_arbitrator import Tier3SeniorArbitrator
 from backend.database import (
+    apply_canonical_valuation,
     get_cached_appraisal,
     get_cached_description,
     load_router_settings,
+    reconcile_all_cached_appraisals,
     save_cached_appraisal,
 )
 from backend.schemas import (
@@ -219,7 +221,7 @@ class HorologyMASOrchestrator:
                         6,
                     )
 
-                save_cached_appraisal(
+                appraisal = save_cached_appraisal(
                     appraisal,
                     description_text=deep_item.description,
                     db_path=self.db_path,
@@ -233,6 +235,18 @@ class HorologyMASOrchestrator:
             for res_item in batch_results:
                 if res_item is not None:
                     final_appraisals.append(res_item)
+
+        # Reconcile canonical reference valuations across all items so identical references/duplicates
+        # (even when appraised concurrently in the same batch) have 100% identical market values
+        reconcile_all_cached_appraisals(db_path=self.db_path)
+        final_appraisals = [
+            apply_canonical_valuation(
+                a,
+                description_text=get_cached_description(a.vinted_id, db_path=self.db_path),
+                db_path=self.db_path,
+            )
+            for a in final_appraisals
+        ]
 
         # Optional UI filter: Mostra solo Marcianti Verificati (Score >= 6)
         if request.only_verified_working:
@@ -280,7 +294,7 @@ class HorologyMASOrchestrator:
             images_b64=images_b64,
             trigger_mode="Manuale On-Demand",
         )
-        save_cached_appraisal(
+        upgraded = save_cached_appraisal(
             upgraded, description_text=desc, db_path=self.db_path
         )
         return upgraded
@@ -351,7 +365,7 @@ class HorologyMASOrchestrator:
                 update={"tier_reached": f"{appraisal.tier_reached} • Link Diretto"}
             )
 
-        save_cached_appraisal(
+        appraisal = save_cached_appraisal(
             appraisal,
             description_text=deep_item.description,
             db_path=self.db_path,

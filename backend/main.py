@@ -12,6 +12,7 @@ from backend.database import (
     clear_appraisal_cache,
     init_db,
     load_router_settings,
+    reconcile_all_cached_appraisals,
     save_router_settings,
 )
 from backend.schemas import (
@@ -30,6 +31,7 @@ shared_vinted_client = VintedClient()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    reconcile_all_cached_appraisals()
     yield
     await shared_vinted_client.close()
 

@@ -330,7 +330,7 @@ class MultiProviderLLMRouter:
         payload = {
             "contents": [{"parts": parts}],
             "generationConfig": {
-                "temperature": 0.2,
+                "temperature": 0.0,
                 "responseMimeType": "application/json",
             },
         }
@@ -407,7 +407,7 @@ class MultiProviderLLMRouter:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "temperature": 0.2,
+            "temperature": 0.0,
         }
         if provider in ("openai", "groq", "deepseek"):
             payload["response_format"] = {"type": "json_object"}
@@ -463,6 +463,7 @@ class MultiProviderLLMRouter:
         payload = {
             "model": model,
             "max_tokens": 1200,
+            "temperature": 0.0,
             "system": system_prompt,
             "messages": [{"role": "user", "content": content_blocks}],
         }
