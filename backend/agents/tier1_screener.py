@@ -17,14 +17,15 @@ FASHION_JUNK_BRANDS = re.compile(
 TIER1_SYSTEM_PROMPT = """Sei l'Agente Tier 1 (Batch Triage Screener) di Vinted Horology Hunter.
 Ricevi una lista JSON compatta (fino a 20 annunci) di orologi sopravvissuti al filtro deterministico Tier 0.
 Il tuo compito:
-1. Scartare orologi fashion/moda privi di valore collezionistico (es. Daniel Wellington, MVMT, Michael Kors, hommage cinesi ultra-economici), quarzi banali prezzati come meccanici, o annunci troppo vaghi/sospetti.
-2. Promuovere al Tier 2 solo i candidati con reale potenziale orologiero e buon rapporto qualità/prezzo (es. Seiko vintage 6139/5606/6106/7009/King Quartz, Orient Star, Citizen Promaster/Aqualand, cronografi meccanici svizzeri, Tissot, Hamilton, ecc.).
-3. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
+1. SCARTARE IMMEDIATAMENTE qualsiasi oggetto che NON sia un vero orologio da polso completo (es. cinturini, scatole vuote, maglie di ricambio, bracciali, abbigliamento, sveglie, occhiali).
+2. Scartare orologi fashion/moda privi di valore collezionistico (es. Daniel Wellington, MVMT, Michael Kors, hommage cinesi ultra-economici), quarzi banali prezzati come meccanici, o annunci troppo vaghi/sospetti ("non testato", "non so se funziona").
+3. Promuovere al Tier 2 solo i candidati che sono veri orologi da polso funzionanti con reale potenziale orologiero e buon rapporto qualità/prezzo (es. Seiko vintage 6139/5606/6106/7009/7S26/Kinetic/King Quartz, Orient Star, Orient 3 Star, Citizen Promaster/Aqualand/Eco-Drive, cronografi meccanici svizzeri, Tissot, Hamilton, ecc.).
+4. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
 {
   "approved_item_ids": [123, 456],
   "triage_notes": {
     "123": "Nota sintetica in italiano sul motivo della promozione",
-    "789": "Scartato: orologio fashion al quarzo privo di interesse orologiero"
+    "789": "Scartato: cinturino/accessorio o orologio fashion privo di interesse"
   }
 }"""
 

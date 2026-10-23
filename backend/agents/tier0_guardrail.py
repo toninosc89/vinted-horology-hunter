@@ -7,7 +7,7 @@ from typing import Optional
 from backend.database import get_cached_appraisal
 from backend.schemas import CatalogItem, WatchAppraisal
 
-# Mandatory Tier 0 Regex Blacklist + Italian horology defect extensions
+# Mandatory Tier 0 Regex Blacklist + Italian/French/Spanish/English horology defect extensions
 TIER0_BLACKLIST_PATTERN = re.compile(
     r"\b("
     r"non\s+funzionante|da\s+revisionare|per\s+ricambi|ricambi|fermo(?!\s+macchina)|rotto|rotta|"
@@ -15,9 +15,25 @@ TIER0_BLACKLIST_PATTERN = re.compile(
     r"batteria\s+da\s+cambiare|pila\s+scarica|senza\s+batteria|solo\s+cassa|"
     r"solo\s+quadrante|blocco|lotto|"
     r"batteria\s+scarica|pila\s+da\s+cambiare|pila\s+da\s+sostituire|batteria\s+esaurita|"
-    r"da\s+riparare|non\s+funziona|non\s+parte|guasto|danneggiato|allagato|ossidato|"
-    r"senza\s+corona|corona\s+staccata|bilanciere\s+rotto|molla\s+rotta"
+    r"da\s+riparare|da\s+sistemare|non\s+funziona|non\s+parte|guasto|danneggiato|allagato|ossidato|"
+    r"senza\s+corona|corona\s+staccata|bilanciere\s+rotto|molla\s+rotta|"
+    r"non\s+testato|non\s+test[eé]|untested|hors\s+service|pour\s+pi[eè]ces|ne\s+fonctionne\s+pas|"
+    r"pile\s+[aà]\s+changer|sans\s+pile"
     r")\b",
+    re.IGNORECASE,
+)
+
+# Strict Watches-Only filter: rejects straps, spare links, empty boxes, wall clocks, and non-watch items
+TIER0_NON_WATCH_PATTERN = re.compile(
+    r"("
+    r"^\s*(cinturino|cinturini|bracciale\s+cinturino|bracelet\s+de\s+montre|correa|scatola|bo[iî]te|estuche|maglia\s+bracciale)\b|"
+    r"\b(solo\s+cinturino|cinturino\s+orologio|cinturino\s+per\s+orologio|cinturino\s+ricambio|"
+    r"solo\s+scatola|scatola\s+vuota|scatola\s+orologio|scatola\s+porta|porta\s+orologi|portaorologi|"
+    r"cofanetto\s+orologio|maglie\s+bracciale|maglia\s+di\s+ricambio|libretto\s+istruzioni|"
+    r"orologio\s+da\s+parete|orologio\s+da\s+tavolo|sveglia\s+da\s+tavolo|"
+    r"t-shirt|maglietta|felpa|pantaloni|jeans|scarpe|sneakers|giacca|cappotto|camicia|vestito|"
+    r"gonna|borsa|zaino|occhiali|profumo|portafoglio|collana|orecchini|anello)\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -33,7 +49,7 @@ class Tier0Guardrail:
     """
     TIER 0: Deterministic Guardrail & SQLite Cache (Cost: $0.00 - Local Python).
     Aggressively filters out non-working, broken, 'for parts/repair', water-damaged,
-    or 'needs battery' watches before spending a single LLM token.
+    'needs battery' watches, and non-watch items (straps, boxes, clothing) before spending a single LLM token.
     """
 
     @staticmethod
@@ -42,8 +58,13 @@ class Tier0Guardrail:
     ) -> tuple[bool, Optional[str]]:
         """
         Returns (is_valid, rejection_reason).
-        If a blacklisted term is matched in title, status, or description, returns (False, reason).
+        If a non-watch item or blacklisted defect term is matched, returns (False, reason).
         """
+        non_watch_match = TIER0_NON_WATCH_PATTERN.search(title)
+        if non_watch_match:
+            matched_item = non_watch_match.group(0).strip()
+            return False, f"Tier 0 Non-Watch Filter: scartato accessorio/non-orologio '{matched_item}'"
+
         combined = f"{title} | {status} | {description}"
         match = TIER0_BLACKLIST_PATTERN.search(combined)
         if match:

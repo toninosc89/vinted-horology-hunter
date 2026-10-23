@@ -318,6 +318,7 @@ class VintedClient:
 
         params: dict[str, Any] = {
             "search_text": search_text,
+            "catalog[]": ["97", "22"],
             "order": "newest_first",
             "per_page": min(max(per_page, 1), 96),
             "page": page,
@@ -376,11 +377,13 @@ class VintedClient:
         page: int = 1,
     ) -> list[CatalogItem]:
         """
-        Extracts real live Vinted.it listings from https://www.vinted.it/catalog Next.js SSR payload.
+        Extracts real live Vinted.it listings from https://www.vinted.it/catalog Next.js SSR payload,
+        strictly filtered to Vinted's Wristwatch categories (catalog[]=97 Men's Watches, catalog[]=22 Women's Watches).
         """
         session = await self._get_session()
         params: dict[str, Any] = {
             "search_text": search_text,
+            "catalog[]": ["97", "22"],
             "order": "newest_first",
             "page": page,
             "currency": "EUR",

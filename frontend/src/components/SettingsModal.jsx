@@ -3,10 +3,10 @@ import { X, Sparkles, Save, Key, Cpu, Server, CheckCircle2 } from 'lucide-react'
 
 const PROVIDER_MODELS = {
   gemini: [
+    'gemini-3.1-flash-lite-preview',
+    'gemini-3-flash-preview',
     'gemini-2.5-flash-lite',
-    'gemini-3.8-flash',
     'gemini-2.5-flash',
-    'gemini-2.5-pro',
     'gemini-4-argon',
   ],
   openai: ['gpt-4o-mini', 'gpt-4o'],
@@ -26,10 +26,13 @@ export default function SettingsModal({
 }) {
   const [formData, setFormData] = useState(settings)
   const [statusMsg, setStatusMsg] = useState('')
+  const [statusError, setStatusError] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     setFormData(settings)
+    setStatusMsg('')
+    setStatusError(false)
   }, [settings, isOpen])
 
   if (!isOpen) return null
@@ -50,11 +53,32 @@ export default function SettingsModal({
 
   const handleAutoOptimizeClick = async () => {
     setSaving(true)
+    setStatusError(false)
     try {
       const optimized = await onAutoOptimize(formData)
       setFormData(optimized)
-      setStatusMsg('Routing ottimizzato automaticamente per Costo/Performance!')
-      setTimeout(() => setStatusMsg(''), 3500)
+      setStatusMsg('Routing ottimizzato automaticamente per Costo/Performance (Cache aggiornata)!')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTestConnection = async () => {
+    setSaving(true)
+    setStatusMsg('Test di connessione live ai modelli in corso...')
+    setStatusError(false)
+    try {
+      const resp = await fetch('/api/settings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      })
+      const data = await resp.json()
+      setStatusError(!data.ok)
+      setStatusMsg(data.message || 'Test completato')
+    } catch (err) {
+      setStatusError(true)
+      setStatusMsg(`Errore di rete durante il test: ${err.message}`)
     } finally {
       setSaving(false)
     }
@@ -63,9 +87,10 @@ export default function SettingsModal({
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
+    setStatusError(false)
     try {
       await onSaveSettings(formData)
-      setStatusMsg('Impostazioni LLM Router salvate con successo!')
+      setStatusMsg('Impostazioni LLM Router salvate e cache aggiornata!')
       setTimeout(() => {
         setStatusMsg('')
         onClose()
@@ -114,19 +139,35 @@ export default function SettingsModal({
                 modello Vision al Tier 2 e il modello High-Reasoning all'Arbitro Forense (Tier 3).
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleAutoOptimizeClick}
-              disabled={saving}
-              className="shrink-0 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg transition"
-            >
-              <Sparkles className="w-4 h-4" />
-              Auto-Optimize Cost/Performance
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={saving}
+                className="px-3.5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shadow-lg transition"
+              >
+                Testa Connessione API
+              </button>
+              <button
+                type="button"
+                onClick={handleAutoOptimizeClick}
+                disabled={saving}
+                className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg transition"
+              >
+                <Sparkles className="w-4 h-4" />
+                Auto-Optimize Cost/Performance
+              </button>
+            </div>
           </div>
 
           {statusMsg && (
-            <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-2">
+            <div
+              className={`p-3 rounded-xl border text-xs font-medium flex items-center gap-2 ${
+                statusError
+                  ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+              }`}
+            >
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{statusMsg}</span>
             </div>

@@ -145,73 +145,86 @@ class HorologyMASOrchestrator:
                 tier1_tokens_per_item = max(1, tier1_call.total_tokens // len(approved_items))
                 tier1_cost_per_item = round(tier1_call.cost_usd / len(approved_items), 6)
 
-        # Stage 2 Deep Fetch + Tier 2 Multimodal Appraiser + Automatic Tier 3 Escalation
-        for cat_item in approved_items:
-            deep_item = await self.vinted_client.fetch_deep_item(
-                item_id=cat_item.id,
-                stage1_fallback=cat_item,
-                enforce_jitter=self.enforce_stage2_jitter,
-            )
+        # Stage 2 Deep Fetch + Tier 2 Multimodal Appraiser + Automatic Tier 3 Escalation (Concurrent)
+        import asyncio
 
-            # Re-verify full Stage 2 description against Tier 0 Blacklist before calling Vision LLM
-            ok_deep_regex, reason_deep = Tier0Guardrail.check_text_blacklist(
-                deep_item.title, deep_item.status, deep_item.description
-            )
-            if not ok_deep_regex:
-                telemetry.discarded_tier0_regex += 1
-                telemetry.estimated_tokens_saved += 1100
-                telemetry.tier0_rejection_reasons.append(
-                    {
-                        "id": str(deep_item.id),
-                        "title": deep_item.title,
-                        "reason": f"{reason_deep} (rilevato in descrizione Stage 2)",
-                    }
+        sem = asyncio.Semaphore(4)
+
+        async def _process_candidate(cat_item: CatalogItem) -> Optional[WatchAppraisal]:
+            async with sem:
+                deep_item = await self.vinted_client.fetch_deep_item(
+                    item_id=cat_item.id,
+                    stage1_fallback=cat_item,
+                    enforce_jitter=self.enforce_stage2_jitter,
                 )
-                continue
 
-            images_b64 = await self.vinted_client.download_images_as_base64(
-                deep_item.photo_urls, max_images=3
-            )
+                # Re-verify full Stage 2 description against Tier 0 Blacklist before calling Vision LLM
+                ok_deep_regex, reason_deep = Tier0Guardrail.check_text_blacklist(
+                    deep_item.title, deep_item.status, deep_item.description
+                )
+                if not ok_deep_regex:
+                    telemetry.discarded_tier0_regex += 1
+                    telemetry.estimated_tokens_saved += 1100
+                    telemetry.tier0_rejection_reasons.append(
+                        {
+                            "id": str(deep_item.id),
+                            "title": deep_item.title,
+                            "reason": f"{reason_deep} (rilevato in descrizione Stage 2)",
+                        }
+                    )
+                    return None
 
-            appraisal = await self.tier2.appraise_item(
-                deep_item=deep_item,
-                images_b64=images_b64,
-                prior_tokens=tier1_tokens_per_item,
-                prior_cost_usd=tier1_cost_per_item,
-            )
-            telemetry.appraised_tier2 += 1
+                images_b64 = await self.vinted_client.download_images_as_base64(
+                    deep_item.photo_urls, max_images=3
+                )
 
-            # Subtract shared tier1 portion when adding to global telemetry so we don't double count
-            tier2_delta_tokens = max(0, appraisal.tokens_used - tier1_tokens_per_item)
-            tier2_delta_cost = max(0.0, appraisal.cost_usd - tier1_cost_per_item)
-            telemetry.total_tokens_used += tier2_delta_tokens
-            telemetry.total_cost_usd = round(
-                telemetry.total_cost_usd + tier2_delta_cost, 6
-            )
-
-            # Automatic Tier 3 Escalation Check
-            if self.tier3.should_auto_escalate(appraisal):
-                pre_t3_tokens = appraisal.tokens_used
-                pre_t3_cost = appraisal.cost_usd
-                appraisal = await self.tier3.arbitrate(
-                    appraisal=appraisal,
-                    description=deep_item.description,
+                appraisal = await self.tier2.appraise_item(
+                    deep_item=deep_item,
                     images_b64=images_b64,
-                    trigger_mode="Auto-Escalation",
+                    prior_tokens=tier1_tokens_per_item,
+                    prior_cost_usd=tier1_cost_per_item,
                 )
-                telemetry.escalated_tier3 += 1
-                telemetry.total_tokens_used += max(0, appraisal.tokens_used - pre_t3_tokens)
+                telemetry.appraised_tier2 += 1
+
+                # Subtract shared tier1 portion when adding to global telemetry so we don't double count
+                tier2_delta_tokens = max(0, appraisal.tokens_used - tier1_tokens_per_item)
+                tier2_delta_cost = max(0.0, appraisal.cost_usd - tier1_cost_per_item)
+                telemetry.total_tokens_used += tier2_delta_tokens
                 telemetry.total_cost_usd = round(
-                    telemetry.total_cost_usd + max(0.0, appraisal.cost_usd - pre_t3_cost),
-                    6,
+                    telemetry.total_cost_usd + tier2_delta_cost, 6
                 )
 
-            save_cached_appraisal(
-                appraisal,
-                description_text=deep_item.description,
-                db_path=self.db_path,
+                # Automatic Tier 3 Escalation Check
+                if self.tier3.should_auto_escalate(appraisal):
+                    pre_t3_tokens = appraisal.tokens_used
+                    pre_t3_cost = appraisal.cost_usd
+                    appraisal = await self.tier3.arbitrate(
+                        appraisal=appraisal,
+                        description=deep_item.description,
+                        images_b64=images_b64,
+                        trigger_mode="Auto-Escalation",
+                    )
+                    telemetry.escalated_tier3 += 1
+                    telemetry.total_tokens_used += max(0, appraisal.tokens_used - pre_t3_tokens)
+                    telemetry.total_cost_usd = round(
+                        telemetry.total_cost_usd + max(0.0, appraisal.cost_usd - pre_t3_cost),
+                        6,
+                    )
+
+                save_cached_appraisal(
+                    appraisal,
+                    description_text=deep_item.description,
+                    db_path=self.db_path,
+                )
+                return appraisal
+
+        if approved_items:
+            batch_results = await asyncio.gather(
+                *[_process_candidate(cat_item) for cat_item in approved_items]
             )
-            final_appraisals.append(appraisal)
+            for res_item in batch_results:
+                if res_item is not None:
+                    final_appraisals.append(res_item)
 
         # Optional UI filter: Mostra solo Marcianti Verificati (Score >= 6)
         if request.only_verified_working:

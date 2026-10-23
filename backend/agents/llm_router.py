@@ -14,6 +14,9 @@ logger = logging.getLogger("horology.llm_router")
 
 # Cost per 1M tokens (input_usd, output_usd)
 MODEL_PRICING_PER_1M: dict[str, tuple[float, float]] = {
+    "gemini-3.1-flash-lite-preview": (0.075, 0.30),
+    "gemini-3-flash-preview": (0.15, 0.60),
+    "gemini-3.1-pro-preview": (1.25, 5.00),
     "gemini-2.5-flash-lite": (0.075, 0.30),
     "gemini-3.8-flash": (0.12, 0.48),
     "gemini-2.5-flash": (0.15, 0.60),
@@ -116,7 +119,7 @@ class MultiProviderLLMRouter:
             s.tier1_model = "llama-3.3-70b-versatile"
         elif s.gemini_api_key:
             s.tier1_provider = "gemini"
-            s.tier1_model = "gemini-2.5-flash-lite"
+            s.tier1_model = "gemini-3.1-flash-lite-preview"
         elif s.deepseek_api_key:
             s.tier1_provider = "deepseek"
             s.tier1_model = "deepseek-chat"
@@ -125,12 +128,12 @@ class MultiProviderLLMRouter:
             s.tier1_model = "gpt-4o-mini"
         else:
             s.tier1_provider = "gemini"
-            s.tier1_model = "gemini-2.5-flash-lite"
+            s.tier1_model = "gemini-3.1-flash-lite-preview"
 
         # Tier 2: Multimodal vision horologist
         if s.gemini_api_key:
             s.tier2_provider = "gemini"
-            s.tier2_model = "gemini-2.5-flash"
+            s.tier2_model = "gemini-3-flash-preview"
         elif s.openai_api_key:
             s.tier2_provider = "openai"
             s.tier2_model = "gpt-4o-mini"
@@ -139,12 +142,12 @@ class MultiProviderLLMRouter:
             s.tier2_model = "claude-3-5-sonnet-latest"
         else:
             s.tier2_provider = "gemini"
-            s.tier2_model = "gemini-2.5-flash"
+            s.tier2_model = "gemini-3-flash-preview"
 
         # Tier 3: Senior Horology Arbitrator (High-Reasoning)
         if s.gemini_api_key:
             s.tier3_provider = "gemini"
-            s.tier3_model = "gemini-4-argon"
+            s.tier3_model = "gemini-3-flash-preview"
         elif s.anthropic_api_key:
             s.tier3_provider = "anthropic"
             s.tier3_model = "claude-3-7-sonnet-latest"
@@ -156,7 +159,7 @@ class MultiProviderLLMRouter:
             s.tier3_model = "gpt-4o"
         else:
             s.tier3_provider = "gemini"
-            s.tier3_model = "gemini-4-argon"
+            s.tier3_model = "gemini-3-flash-preview"
 
         self.settings = s
         return s
@@ -168,7 +171,7 @@ class MultiProviderLLMRouter:
         if tier == 1:
             primary = (self.settings.tier1_provider, self.settings.tier1_model)
             alternates = [
-                ("gemini", "gemini-2.5-flash-lite"),
+                ("gemini", "gemini-3.1-flash-lite-preview"),
                 ("groq", "llama-3.3-70b-versatile"),
                 ("openai", "gpt-4o-mini"),
                 ("deepseek", "deepseek-chat"),
@@ -177,7 +180,7 @@ class MultiProviderLLMRouter:
         elif tier == 2:
             primary = (self.settings.tier2_provider, self.settings.tier2_model)
             alternates = [
-                ("gemini", "gemini-2.5-flash"),
+                ("gemini", "gemini-3-flash-preview"),
                 ("openai", "gpt-4o-mini"),
                 ("anthropic", "claude-3-5-sonnet-latest"),
                 ("openrouter", "google/gemini-2.5-flash"),
@@ -185,7 +188,7 @@ class MultiProviderLLMRouter:
         else:
             primary = (self.settings.tier3_provider, self.settings.tier3_model)
             alternates = [
-                ("gemini", "gemini-4-argon"),
+                ("gemini", "gemini-3-flash-preview"),
                 ("anthropic", "claude-3-7-sonnet-latest"),
                 ("deepseek", "deepseek-reasoner"),
                 ("openai", "gpt-4o"),
@@ -259,7 +262,7 @@ class MultiProviderLLMRouter:
             content=content_str,
             parsed_json=fallback_dict,
             provider_used=configured_provider,
-            model_used=f"{configured_model}",
+            model_used="Euristico Locale (Fallback Offline)",
             input_tokens=est_input_tokens,
             output_tokens=est_output_tokens,
             total_tokens=total_tokens,
@@ -297,12 +300,22 @@ class MultiProviderLLMRouter:
         user_prompt: str,
         images: Optional[list[dict[str, str]]] = None,
     ) -> LLMCallResult:
-        # Map virtual/preview Gemini aliases to valid REST endpoints if needed
-        api_model = model
-        if model in ("gemini-4-argon", "gemini-3.8-flash"):
-            api_model = "gemini-2.5-flash"
+        # Map Gemini aliases to currently active Google AI Studio models with automatic fallback
+        if "lite" in model:
+            candidate_models = [
+                "gemini-3.1-flash-lite-preview",
+                "gemini-3-flash-preview",
+                "gemini-2.5-flash-lite",
+            ]
+        else:
+            candidate_models = [
+                "gemini-3-flash-preview",
+                "gemini-3.1-flash-lite-preview",
+                "gemini-2.5-flash",
+            ]
+        if model not in candidate_models and not model.startswith("gemini-2.5") and model not in ("gemini-4-argon", "gemini-3.8-flash"):
+            candidate_models.insert(0, model)
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{api_model}:generateContent?key={api_key}"
         parts: list[dict[str, Any]] = [{"text": f"{system_prompt}\n\n{user_prompt}"}]
         for img in images or []:
             parts.append(
@@ -321,27 +334,47 @@ class MultiProviderLLMRouter:
                 "responseMimeType": "application/json",
             },
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
 
-        candidates = data.get("candidates") or []
-        text_out = candidates[0]["content"]["parts"][0]["text"]
-        usage = data.get("usageMetadata") or {}
-        in_tok = int(usage.get("promptTokenCount") or 350)
-        out_tok = int(usage.get("candidatesTokenCount") or 180)
-        parsed = self.extract_json_object(text_out)
-        return LLMCallResult(
-            content=text_out,
-            parsed_json=parsed,
-            provider_used="gemini",
-            model_used=model,
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            total_tokens=in_tok + out_tok,
-            cost_usd=self.compute_cost_usd(model, in_tok, out_tok),
-        )
+        last_exc: Optional[Exception] = None
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            for api_model in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{api_model}:generateContent?key={api_key}"
+                try:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code in (404, 429, 503):
+                        last_exc = RuntimeError(f"Gemini {api_model} HTTP {resp.status_code}: {resp.text[:200]}")
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    candidates = data.get("candidates") or []
+                    content_parts = candidates[0].get("content", {}).get("parts", [])
+                    text_out = ""
+                    for p in content_parts:
+                        if "text" in p and not p.get("thought", False):
+                            text_out = p["text"]
+                    if not text_out and content_parts:
+                        text_out = content_parts[-1].get("text", "{}")
+
+                    usage = data.get("usageMetadata") or {}
+                    in_tok = int(usage.get("promptTokenCount") or 350)
+                    out_tok = int(usage.get("candidatesTokenCount") or 180)
+                    parsed = self.extract_json_object(text_out)
+                    return LLMCallResult(
+                        content=text_out,
+                        parsed_json=parsed,
+                        provider_used="gemini",
+                        model_used=f"{api_model} (LIVE API)",
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        total_tokens=in_tok + out_tok,
+                        cost_usd=self.compute_cost_usd(api_model, in_tok, out_tok),
+                    )
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+
+        raise last_exc or RuntimeError("All Gemini candidate models failed")
 
     async def _call_openai_compatible(
         self,

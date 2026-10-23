@@ -101,14 +101,60 @@ async def get_settings() -> LLMRouterSettings:
 
 @app.post("/api/settings", response_model=LLMRouterSettings)
 async def update_settings(settings: LLMRouterSettings) -> LLMRouterSettings:
+    clear_appraisal_cache()
     return save_router_settings(settings)
 
 
 @app.post("/api/settings/auto-optimize", response_model=LLMRouterSettings)
 async def auto_optimize_router(settings: LLMRouterSettings) -> LLMRouterSettings:
+    clear_appraisal_cache()
     router = MultiProviderLLMRouter(settings)
     optimized = router.auto_optimize_settings()
     return save_router_settings(optimized)
+
+
+@app.post("/api/settings/test")
+async def test_router_connection(settings: LLMRouterSettings) -> dict[str, Any]:
+    import time
+
+    router = MultiProviderLLMRouter(settings)
+    provider = settings.tier2_provider
+    model = settings.tier2_model
+    api_key = router.get_api_key_for_provider(provider)
+    if not api_key:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "message": f"Nessuna chiave API inserita per il provider '{provider.upper()}'.",
+        }
+
+    t0 = time.perf_counter()
+    try:
+        res = await router._dispatch_provider(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            system_prompt="Sei un assistente orologiero. Rispondi solo in JSON.",
+            user_prompt='Restituisci {"status": "attivo", "messaggio": "Connessione LLM verificata"}',
+            images=None,
+        )
+        latency_ms = round((time.perf_counter() - t0) * 1000)
+        return {
+            "ok": True,
+            "provider": res.provider_used,
+            "model": res.model_used,
+            "latency_ms": latency_ms,
+            "tokens": res.total_tokens,
+            "message": f"Connessione LIVE attiva! Modello risponde in {latency_ms}ms: {res.model_used}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "message": f"Errore chiamata API ({provider}/{model}): {str(exc)[:180]}",
+        }
 
 
 @app.delete("/api/cache")
