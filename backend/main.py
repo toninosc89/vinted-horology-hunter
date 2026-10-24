@@ -282,3 +282,30 @@ async def flush_cache() -> dict[str, Any]:
     deleted = clear_appraisal_cache()
     return {"status": "cleared", "deleted_entries": deleted}
 
+
+# Serve compiled React SPA (frontend/dist) in production / Docker deployments
+from pathlib import Path
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if (FRONTEND_DIST_DIR / "index.html").exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(assets_dir)),
+            name="frontend_assets",
+        )
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint non trovato")
+        candidate = FRONTEND_DIST_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(FRONTEND_DIST_DIR / "index.html"))
+
+

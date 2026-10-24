@@ -1,0 +1,28 @@
+# Git & Docs
+.git
+.gitignore
+README.md
+
+# Python cache & virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.pytest_cache/
+
+# Local SQLite DB & Secrets (persisted via Docker volume /app/data instead)
+*.db
+*.sqlite
+*.sqlite3
+data/
+.env
+.env.local
+
+# Node modules & local build artifacts (rebuilt cleanly inside Stage 1)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+*.log
