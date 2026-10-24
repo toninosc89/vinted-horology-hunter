@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
-from backend.schemas import LLMRouterSettings, WatchAppraisal
+from backend.schemas import (
+    AlertSchedulerConfig,
+    LLMRouterSettings,
+    NotificationLogEntry,
+    WatchAppraisal,
+)
 
 load_dotenv()
 
@@ -58,6 +63,36 @@ def init_db(db_path: Optional[Path] = None) -> None:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     settings_json TEXT NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduler_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    config_json TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vinted_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    identified_brand_model TEXT NOT NULL,
+                    price_listed_eur REAL NOT NULL,
+                    estimated_market_value_eur_min REAL NOT NULL,
+                    estimated_market_value_eur_max REAL NOT NULL,
+                    net_margin_potential_eur REAL NOT NULL,
+                    deal_score INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    photo_url TEXT DEFAULT '',
+                    channels_sent TEXT NOT NULL,
+                    delivery_status TEXT NOT NULL,
+                    whatsapp_quick_link TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -686,3 +721,171 @@ def save_router_settings(
         return settings
     finally:
         conn.close()
+
+
+def load_scheduler_config(db_path: Optional[Path] = None) -> AlertSchedulerConfig:
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT config_json FROM scheduler_config WHERE id = 1"
+        ).fetchone()
+        if row:
+            cfg = AlertSchedulerConfig.model_validate(json.loads(row["config_json"]))
+        else:
+            cfg = AlertSchedulerConfig()
+
+        if not cfg.telegram_bot_token and os.getenv("TELEGRAM_BOT_TOKEN"):
+            cfg.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        if not cfg.telegram_chat_id and os.getenv("TELEGRAM_CHAT_ID"):
+            cfg.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        if not cfg.whatsapp_phone and os.getenv("WHATSAPP_PHONE"):
+            cfg.whatsapp_phone = os.getenv("WHATSAPP_PHONE", "")
+        if not cfg.whatsapp_apikey and os.getenv("WHATSAPP_APIKEY"):
+            cfg.whatsapp_apikey = os.getenv("WHATSAPP_APIKEY", "")
+        return cfg
+    finally:
+        conn.close()
+
+
+def save_scheduler_config(
+    config: AlertSchedulerConfig, db_path: Optional[Path] = None
+) -> AlertSchedulerConfig:
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO scheduler_config (id, config_json, updated_at)
+                VALUES (1, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    config_json = excluded.config_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (config.model_dump_json(),),
+            )
+        return config
+    finally:
+        conn.close()
+
+
+def was_watch_already_notified(
+    vinted_id: int, price_listed_eur: float, db_path: Optional[Path] = None
+) -> bool:
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 FROM notification_logs
+            WHERE vinted_id = ? AND ABS(price_listed_eur - ?) < 0.05
+            LIMIT 1
+            """,
+            (int(vinted_id), float(price_listed_eur)),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def record_notification_log(
+    appraisal: WatchAppraisal,
+    channels_sent: str,
+    delivery_status: str,
+    whatsapp_quick_link: str = "",
+    db_path: Optional[Path] = None,
+) -> NotificationLogEntry:
+    init_db(db_path)
+    conn = get_connection(db_path)
+    photo_url = appraisal.photo_urls[0] if appraisal.photo_urls else ""
+    try:
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO notification_logs (
+                    vinted_id, title, identified_brand_model, price_listed_eur,
+                    estimated_market_value_eur_min, estimated_market_value_eur_max,
+                    net_margin_potential_eur, deal_score, url, photo_url,
+                    channels_sent, delivery_status, whatsapp_quick_link, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    int(appraisal.vinted_id),
+                    appraisal.title,
+                    appraisal.identified_brand_model,
+                    float(appraisal.price_listed_eur),
+                    float(appraisal.estimated_market_value_eur_min),
+                    float(appraisal.estimated_market_value_eur_max),
+                    float(appraisal.net_margin_potential_eur),
+                    int(appraisal.deal_score),
+                    appraisal.url,
+                    photo_url,
+                    channels_sent,
+                    delivery_status,
+                    whatsapp_quick_link,
+                ),
+            )
+            row_id = int(cur.lastrowid or 0)
+            row = conn.execute(
+                "SELECT * FROM notification_logs WHERE id = ?", (row_id,)
+            ).fetchone()
+            return NotificationLogEntry(
+                id=int(row["id"]),
+                vinted_id=int(row["vinted_id"]),
+                title=str(row["title"]),
+                identified_brand_model=str(row["identified_brand_model"]),
+                price_listed_eur=float(row["price_listed_eur"]),
+                estimated_market_value_eur_min=float(row["estimated_market_value_eur_min"]),
+                estimated_market_value_eur_max=float(row["estimated_market_value_eur_max"]),
+                net_margin_potential_eur=float(row["net_margin_potential_eur"]),
+                deal_score=int(row["deal_score"]),
+                url=str(row["url"]),
+                photo_url=str(row["photo_url"] or ""),
+                channels_sent=str(row["channels_sent"]),
+                delivery_status=str(row["delivery_status"]),
+                whatsapp_quick_link=str(row["whatsapp_quick_link"] or ""),
+                created_at=str(row["created_at"]),
+            )
+    finally:
+        conn.close()
+
+
+def list_notification_logs(
+    limit: int = 20, db_path: Optional[Path] = None
+) -> list[NotificationLogEntry]:
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM notification_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, limit),),
+        ).fetchall()
+        return [
+            NotificationLogEntry(
+                id=int(r["id"]),
+                vinted_id=int(r["vinted_id"]),
+                title=str(r["title"]),
+                identified_brand_model=str(r["identified_brand_model"]),
+                price_listed_eur=float(r["price_listed_eur"]),
+                estimated_market_value_eur_min=float(r["estimated_market_value_eur_min"]),
+                estimated_market_value_eur_max=float(r["estimated_market_value_eur_max"]),
+                net_margin_potential_eur=float(r["net_margin_potential_eur"]),
+                deal_score=int(r["deal_score"]),
+                url=str(r["url"]),
+                photo_url=str(r["photo_url"] or ""),
+                channels_sent=str(r["channels_sent"]),
+                delivery_status=str(r["delivery_status"]),
+                whatsapp_quick_link=str(r["whatsapp_quick_link"] or ""),
+                created_at=str(r["created_at"]),
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+

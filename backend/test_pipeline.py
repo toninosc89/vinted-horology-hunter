@@ -238,6 +238,25 @@ async def test_fastapi_endpoints_e2e() -> None:
         assert r_t3.status_code == 200
         assert "Tier 3" in r_t3.json()["tier_reached"]
 
+        # Test Radar Scheduler & Telegram/WhatsApp Notification Engine
+        r_sched_status = await client.get("/api/scheduler/status")
+        assert r_sched_status.status_code == 200
+        sched_cfg = r_sched_status.json()["config"]
+        sched_cfg["interval_minutes"] = 10
+        sched_cfg["query"] = "Orient Star"
+
+        r_sched_save = await client.post("/api/scheduler/config", json=sched_cfg)
+        assert r_sched_save.status_code == 200
+        assert r_sched_save.json()["config"]["interval_minutes"] == 10
+
+        r_test_alert = await client.post("/api/scheduler/test-alert", json=sched_cfg)
+        assert r_test_alert.status_code == 200
+        alert_data = r_test_alert.json()
+        assert alert_data["ok"] is True
+        assert "https://wa.me/" in alert_data["entry"]["whatsapp_quick_link"]
+        assert "vinted.it/items/" in alert_data["entry"]["url"]
+
+
 
 if __name__ == "__main__":
     print("Running Vinted Horology Hunter Pre-Flight & Pipeline Verification...")

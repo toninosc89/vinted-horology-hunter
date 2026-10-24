@@ -17,10 +17,13 @@ from backend.database import (
     reconcile_all_cached_appraisals,
     save_router_settings,
 )
+from backend.notifier import WatchAlertNotifier, WatchRadarScheduler
 from backend.schemas import (
+    AlertSchedulerConfig,
     AnalyzeUrlRequest,
     LLMRouterSettings,
     PipelineTelemetry,
+    SchedulerStatusResponse,
     SearchRequest,
     SearchResponse,
     Tier3EscalationRequest,
@@ -29,13 +32,16 @@ from backend.schemas import (
 from backend.vinted_client import VintedClient
 
 shared_vinted_client = VintedClient()
+shared_scheduler = WatchRadarScheduler(vinted_client=shared_vinted_client)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     reconcile_all_cached_appraisals()
+    shared_scheduler.start_background_loop()
     yield
+    await shared_scheduler.stop_background_loop()
     await shared_vinted_client.close()
 
 
@@ -135,6 +141,79 @@ async def run_tier3_escalation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/scheduler/status", response_model=SchedulerStatusResponse)
+async def get_scheduler_status() -> SchedulerStatusResponse:
+    return shared_scheduler.get_status()
+
+
+@app.post("/api/scheduler/config", response_model=SchedulerStatusResponse)
+async def update_scheduler_config(
+    config: AlertSchedulerConfig,
+) -> SchedulerStatusResponse:
+    shared_scheduler.update_config(config)
+    shared_scheduler.start_background_loop()
+    return shared_scheduler.get_status()
+
+
+@app.post("/api/scheduler/run-now")
+async def trigger_scheduler_run_now(
+    config: AlertSchedulerConfig,
+) -> dict[str, Any]:
+    shared_scheduler.update_config(config)
+    shared_scheduler.start_background_loop()
+    cycle_result = await shared_scheduler.execute_radar_cycle()
+    return {
+        "cycle": cycle_result,
+        "status": shared_scheduler.get_status().model_dump(),
+    }
+
+
+@app.post("/api/scheduler/test-alert")
+async def send_test_alert(config: AlertSchedulerConfig) -> dict[str, Any]:
+    shared_scheduler.update_config(config)
+    cached = list_cached_appraisals(limit=1)
+    if cached:
+        sample = cached[0]
+    else:
+        sample = WatchAppraisal(
+            vinted_id=10298557299,
+            title="Orient Star Classic Automatic Power Reserve RE-AU0006S00B",
+            price_listed_eur=195.0,
+            total_vinted_cost_eur=209.95,
+            url="https://www.vinted.it/items/10298557299-relogio-orient-star-re-au0006s00b",
+            photo_urls=[],
+            identified_brand_model="Orient Star Contemporary Automatic 50h",
+            estimated_reference_caliber="Calibro In-House F6N43 (Ref. RE-AU0006S00B)",
+            is_working_verified=True,
+            working_status_notes="Test Alert: Perfettamente marciante",
+            franken_fake_risk="LOW",
+            authenticity_notes="Test notifica Telegram / WhatsApp attiva",
+            estimated_market_value_eur_min=340.0,
+            estimated_market_value_eur_max=430.0,
+            net_margin_potential_eur=175.05,
+            deal_score=9,
+            confidence_score=0.95,
+            recommended_action="COMPRA_SUBITO",
+            suggested_offer_eur=175.0,
+            tier_reached="Test Radar Alert",
+            model_used="Radar Notifier",
+            tokens_used=0,
+            cost_usd=0.0,
+            roi_pct=83.4,
+        )
+
+    entry = await WatchAlertNotifier.dispatch_alert(
+        config=config,
+        appraisal=sample,
+        record_in_db=True,
+    )
+    return {
+        "ok": True,
+        "entry": entry.model_dump(),
+        "status": shared_scheduler.get_status().model_dump(),
+    }
+
+
 @app.get("/api/settings", response_model=LLMRouterSettings)
 async def get_settings() -> LLMRouterSettings:
     return load_router_settings()
@@ -202,3 +281,4 @@ async def test_router_connection(settings: LLMRouterSettings) -> dict[str, Any]:
 async def flush_cache() -> dict[str, Any]:
     deleted = clear_appraisal_cache()
     return {"status": "cleared", "deleted_entries": deleted}
+

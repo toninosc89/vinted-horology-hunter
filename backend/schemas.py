@@ -135,3 +135,54 @@ class AnalyzeUrlRequest(BaseModel):
     run_tier3: bool = Field(default=False)
     bypass_cache: bool = Field(default=True)
 
+
+class AlertSchedulerConfig(BaseModel):
+    enabled: bool = False
+    query: str = Field(default="Seiko Vintage", min_length=1)
+    max_price: Optional[float] = Field(default=350.0, gt=0)
+    max_items: int = Field(default=10, ge=1, le=30)
+    interval_minutes: int = Field(default=15, ge=1, le=1440)
+    min_deal_score: int = Field(default=7, ge=1, le=10)
+    only_verified_working: bool = True
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    whatsapp_enabled: bool = False
+    whatsapp_phone: str = ""
+    whatsapp_apikey: str = ""
+    whatsapp_webhook_url: str = ""
+
+
+class NotificationLogEntry(BaseModel):
+    id: int
+    vinted_id: int
+    title: str
+    identified_brand_model: str
+    price_listed_eur: float
+    estimated_market_value_eur_min: float
+    estimated_market_value_eur_max: float
+    net_margin_potential_eur: float
+    deal_score: int
+    url: str
+    photo_url: str = ""
+    channels_sent: str
+    delivery_status: str
+    whatsapp_quick_link: str = ""
+    created_at: str
+
+
+class SchedulerStatusResponse(BaseModel):
+    config: AlertSchedulerConfig
+    is_running_scan: bool = False
+    last_run_at: Optional[str] = None
+    next_run_at: Optional[str] = None
+    seconds_until_next_run: Optional[int] = None
+    total_runs: int = 0
+    total_alerts_sent: int = 0
+    last_run_items_found: int = 0
+    last_run_new_alerts: int = 0
+    last_run_cost_eur: float = 0.0
+    last_error: str = ""
+    recent_notifications: list[NotificationLogEntry] = Field(default_factory=list)
+
+

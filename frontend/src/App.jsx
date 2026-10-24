@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import WatchCard from './components/WatchCard.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
+import RadarSchedulerPanel from './components/RadarSchedulerPanel.jsx'
 
 const PRESET_QUERIES = [
   'Seiko Vintage',
@@ -577,6 +578,17 @@ export default function App() {
             </div>
           </form>
         </section>
+
+        {/* 1C. Radar Scansione Periodica On-Demand & Alert WhatsApp / Telegram */}
+        <RadarSchedulerPanel
+          currentSearchQuery={query}
+          currentMaxPrice={maxPrice}
+          onRadarItemsFound={(radarItems) => {
+            if (Array.isArray(radarItems) && radarItems.length > 0) {
+              setItems(radarItems)
+            }
+          }}
+        />
 
         {/* 2. Live Pipeline & FinOps Telemetry Bar */}
         <section
