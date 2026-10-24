@@ -40,7 +40,12 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questi campi in ITALIANO:
 import html
 import re
 from urllib.parse import quote_plus
-from curl_cffi.requests import AsyncSession
+import httpx
+
+try:
+    from curl_cffi.requests import AsyncSession
+except Exception:
+    AsyncSession = None  # type: ignore
 
 
 async def fetch_free_web_market_comps(
@@ -54,25 +59,35 @@ async def fetch_free_web_market_comps(
     clean_ref = re.sub(r"\[.*?\]", "", reference_caliber or "").strip()
     query = f"{brand_model} {clean_ref} price EUR Chrono24 eBay".strip()
     url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    headers = {
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
     try:
-        async with AsyncSession(impersonate="chrome120", timeout=4.0) as s:
-            resp = await s.get(
-                url,
-                headers={"Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"},
-            )
-            if resp.status_code != 200:
-                return "Nessuno snippet web esterno disponibile (usa conoscenza storica interna)."
-            snippets = re.findall(
-                r'class="result__snippet[^>]*>(.*?)</a>', resp.text, re.DOTALL
-            )
-            cleaned: list[str] = []
-            for raw_snip in snippets[:4]:
-                txt = re.sub(r"<[^>]+>", " ", raw_snip)
-                txt = html.unescape(re.sub(r"\s+", " ", txt)).strip()
-                if txt:
-                    cleaned.append(f"- {txt[:220]}")
-            if cleaned:
-                return "\n".join(cleaned)
+        if AsyncSession is not None:
+            async with AsyncSession(impersonate="chrome120", timeout=4.0) as s:
+                resp = await s.get(url, headers=headers)
+                status_code = resp.status_code
+                text_body = resp.text
+        else:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as s:
+                resp = await s.get(url, headers=headers)
+                status_code = resp.status_code
+                text_body = resp.text
+
+        if status_code != 200:
+            return "Nessuno snippet web esterno disponibile (usa conoscenza storica interna)."
+        snippets = re.findall(
+            r'class="result__snippet[^>]*>(.*?)</a>', text_body, re.DOTALL
+        )
+        cleaned: list[str] = []
+        for raw_snip in snippets[:4]:
+            txt = re.sub(r"<[^>]+>", " ", raw_snip)
+            txt = html.unescape(re.sub(r"\s+", " ", txt)).strip()
+            if txt:
+                cleaned.append(f"- {txt[:220]}")
+        if cleaned:
+            return "\n".join(cleaned)
     except Exception:
         pass
     return "Nessuno snippet web esterno disponibile (usa conoscenza storica interna)."

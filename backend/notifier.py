@@ -304,20 +304,29 @@ class WatchRadarScheduler:
         self.last_run_cost_eur: float = 0.0
         self.last_error: str = ""
         self._task: Optional[asyncio.Task[None]] = None
-        self._stop_event = asyncio.Event()
-        self._scan_lock = asyncio.Lock()
+        self._stopped: bool = False
+        self._scan_lock: Optional[asyncio.Lock] = None
         self.latest_scan_items: list[WatchAppraisal] = []
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._scan_lock is None:
+            self._scan_lock = asyncio.Lock()
+        return self._scan_lock
 
     def start_background_loop(self) -> None:
         cfg = load_scheduler_config(db_path=self.db_path)
         if cfg.enabled:
             self.next_run_epoch = time.time() + (cfg.interval_minutes * 60)
-        if self._task is None or self._task.done():
-            self._stop_event.clear()
-            self._task = asyncio.create_task(self._loop())
+        self._stopped = False
+        try:
+            loop = asyncio.get_running_loop()
+            if self._task is None or self._task.done():
+                self._task = loop.create_task(self._loop())
+        except RuntimeError:
+            pass
 
     async def stop_background_loop(self) -> None:
-        self._stop_event.set()
+        self._stopped = True
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -334,7 +343,7 @@ class WatchRadarScheduler:
         return saved
 
     async def _loop(self) -> None:
-        while not self._stop_event.is_set():
+        while not self._stopped:
             try:
                 cfg = load_scheduler_config(db_path=self.db_path)
                 if cfg.enabled and not self.is_running_scan:
@@ -357,10 +366,11 @@ class WatchRadarScheduler:
             await asyncio.sleep(2.0)
 
     async def execute_radar_cycle(self) -> dict[str, Any]:
-        if self._scan_lock.locked():
+        lock = self._get_lock()
+        if lock.locked():
             return {"status": "already_running"}
 
-        async with self._scan_lock:
+        async with lock:
             self.is_running_scan = True
             self.last_error = ""
             cfg = load_scheduler_config(db_path=self.db_path)

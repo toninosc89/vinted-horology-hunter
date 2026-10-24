@@ -28,8 +28,12 @@ DB_PATH = Path(
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     target = Path(db_path) if db_path else DB_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target), check_same_thread=False)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(target), check_same_thread=False)
+    except Exception:
+        fallback_target = Path(__file__).resolve().parent / "horology_hunter.db"
+        conn = sqlite3.connect(str(fallback_target), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

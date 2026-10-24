@@ -17,16 +17,20 @@ FROM python:3.11-slim AS production
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     TZ=Europe/Rome \
     HOROLOGY_DB_PATH=/app/data/horology_hunter.db \
     PORT=8000
 
 WORKDIR /app
 
-# Install system certificates and curl for healthchecks & TLS impersonation
+# Install system libraries required by curl_cffi (libatomic1, libstdc++6, libnss3) & healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    libatomic1 \
+    libnss3 \
+    libstdc++6 \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
@@ -41,12 +45,13 @@ COPY backend/ ./backend/
 # Copy compiled frontend static assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Create persistent SQLite volume directory
-RUN mkdir -p /app/data
+# Create persistent SQLite volume directory with full permissions
+RUN mkdir -p /app/data && chmod 777 /app/data
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
 
-CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use --loop asyncio so curl_cffi and background scheduler run cleanly without uvloop conflicts
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]

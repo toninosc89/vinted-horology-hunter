@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore", message=".*Proactor event loop.*")
 
 try:
     from curl_cffi.requests import AsyncSession
-except ImportError:
+except Exception:
     AsyncSession = None  # type: ignore
 
 import httpx
