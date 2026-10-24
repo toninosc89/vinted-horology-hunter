@@ -11,9 +11,9 @@ COPY frontend/ ./
 RUN npm run build
 
 # ============================================================================
-# STAGE 2: Production Python 3.11 + FastAPI + curl_cffi + Built Frontend
+# STAGE 2: Production Python 3.12 + FastAPI + curl_cffi + Built Frontend
 # ============================================================================
-FROM python:3.11-slim AS production
+FROM python:3.12-slim AS production
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

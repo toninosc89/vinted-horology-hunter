@@ -129,7 +129,8 @@ class HorologyMASOrchestrator:
 
             # FinOps Deduplication: Prevent identical seller reposts (same normalized title + price)
             # from triggering duplicate Stage 2 / Tier 2 Vision LLM calls in the same scan
-            norm_sig = f"{re.sub(r'\\W+', '', item.title.lower())}:{int(round(item.price))}"
+            clean_title = re.sub(r"\W+", "", item.title.lower())
+            norm_sig = f"{clean_title}:{int(round(item.price))}"
             if norm_sig in seen_uncached_signatures:
                 telemetry.discarded_tier0_regex += 1
                 telemetry.estimated_tokens_saved += 1450
