@@ -326,8 +326,14 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
         # Compute consensus valuation & lowest listing price per canonical reference key
         consensus_map: dict[str, tuple[str, str, float, float, float, int]] = {}
         for rkey, app_list in groups.items():
-            # Prioritize Tier 3 Google-Search-grounded valuations if present
-            grounded_samples = [a for a in app_list if "Google Search" in (a.model_used or "")]
+            # Prioritize Tier 3 Web-Comps / Search-grounded valuations if present
+            grounded_samples = [
+                a
+                for a in app_list
+                if "Google Search" in (a.model_used or "")
+                or "Web Comps" in (a.model_used or "")
+                or "Tier 3" in (a.tier_reached or "")
+            ]
             val_samples = grounded_samples if grounded_samples else app_list
 
             avg_min = sum(a.estimated_market_value_eur_min for a in val_samples) / len(val_samples)
@@ -344,7 +350,13 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
             best_app = max(
                 val_samples,
                 key=lambda a: (
-                    1 if "Google Search" in (a.model_used or "") else 0,
+                    1
+                    if (
+                        "Google Search" in (a.model_used or "")
+                        or "Web Comps" in (a.model_used or "")
+                        or "Tier 3" in (a.tier_reached or "")
+                    )
+                    else 0,
                     a.confidence_score,
                     len(a.estimated_reference_caliber),
                 ),
@@ -432,6 +444,58 @@ def reconcile_all_cached_appraisals(db_path: Optional[Path] = None) -> int:
                     )
                     updated_count += 1
         return updated_count
+    finally:
+        conn.close()
+
+
+def list_cached_appraisals(
+    limit: int = 36, db_path: Optional[Path] = None
+) -> list[WatchAppraisal]:
+    """
+    Returns up to `limit` cached watch appraisals from SQLite at $0.00 / €0.00 (0 tokens),
+    sorted by deal_score descending and net_margin_potential_eur descending.
+    Used on initial frontend load so refreshing the browser never triggers a paid LLM scan automatically.
+    """
+    init_db(db_path)
+    reconcile_all_cached_appraisals(db_path=db_path)
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT appraisal_json FROM appraisal_cache
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (max(1, limit * 2),),
+        ).fetchall()
+        seen_ids: set[int] = set()
+        results: list[WatchAppraisal] = []
+        for r in rows:
+            try:
+                app = WatchAppraisal.model_validate(json.loads(r["appraisal_json"]))
+                if app.vinted_id in seen_ids:
+                    continue
+                seen_ids.add(app.vinted_id)
+                results.append(
+                    app.model_copy(
+                        update={
+                            "tier_reached": (
+                                app.tier_reached
+                                if "Cache" in app.tier_reached
+                                else f"{app.tier_reached} • Cache SQLite"
+                            ),
+                            "tokens_used": 0,
+                            "cost_usd": 0.0,
+                        }
+                    )
+                )
+            except Exception:
+                continue
+        results.sort(
+            key=lambda a: (a.deal_score, a.net_margin_potential_eur),
+            reverse=True,
+        )
+        return results[:limit]
     finally:
         conn.close()
 
@@ -539,6 +603,23 @@ def clear_appraisal_cache(db_path: Optional[Path] = None) -> int:
         conn.close()
 
 
+def clear_heuristic_only_cache(db_path: Optional[Path] = None) -> int:
+    """
+    Removes only fallback/heuristic entries from `appraisal_cache`, preserving all
+    paid LLM appraisals so changing settings never forces costly re-evaluations.
+    """
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM appraisal_cache WHERE appraisal_json LIKE '%heuristic%'"
+            )
+            return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def load_router_settings(db_path: Optional[Path] = None) -> LLMRouterSettings:
     init_db(db_path)
     conn = get_connection(db_path)
@@ -548,6 +629,19 @@ def load_router_settings(db_path: Optional[Path] = None) -> LLMRouterSettings:
         ).fetchone()
         if row:
             saved = LLMRouterSettings.model_validate(json.loads(row["settings_json"]))
+            # FinOps Auto-Upgrade: migrate legacy expensive Tier 2 Gemini 3 Flash ($0.50/$3.00)
+            # to Gemini 3.1 Flash Lite ($0.10/$0.40) when auto_optimize_enabled is True
+            if (
+                saved.auto_optimize_enabled
+                and saved.tier2_provider == "gemini"
+                and saved.tier2_model == "gemini-3-flash-preview"
+            ):
+                saved.tier2_model = "gemini-3.1-flash-lite-preview"
+                with conn:
+                    conn.execute(
+                        "UPDATE router_settings SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                        (saved.model_dump_json(),),
+                    )
         else:
             saved = LLMRouterSettings()
 

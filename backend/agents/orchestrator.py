@@ -74,8 +74,11 @@ class HorologyMASOrchestrator:
         telemetry.source_mode = self.vinted_client.last_source_mode
 
         # Tier 0: Deterministic Guardrail & Cache Check (until we fill request.max_items valid candidates)
+        import re
+
         surviving_tier0: list[CatalogItem] = []
         final_appraisals: list[WatchAppraisal] = []
+        seen_uncached_signatures: set[str] = set()
         inspected_count = 0
 
         for item in catalog_items:
@@ -124,11 +127,27 @@ class HorologyMASOrchestrator:
                     final_appraisals.append(cached_hit)
                     continue
 
+            # FinOps Deduplication: Prevent identical seller reposts (same normalized title + price)
+            # from triggering duplicate Stage 2 / Tier 2 Vision LLM calls in the same scan
+            norm_sig = f"{re.sub(r'\\W+', '', item.title.lower())}:{int(round(item.price))}"
+            if norm_sig in seen_uncached_signatures:
+                telemetry.discarded_tier0_regex += 1
+                telemetry.estimated_tokens_saved += 1450
+                telemetry.tier0_rejection_reasons.append(
+                    {
+                        "id": str(item.id),
+                        "title": item.title,
+                        "reason": "Tier 0 FinOps Dedup: Annuncio duplicato (stesso titolo e prezzo)",
+                    }
+                )
+                continue
+            seen_uncached_signatures.add(norm_sig)
+
             surviving_tier0.append(item)
 
         telemetry.items_extracted = inspected_count
 
-        # Tier 1: Batch Triage Screener (up to 20 surviving items)
+        # Tier 1: Batch Triage Screener (up to 20 surviving items, promotes top 8 max)
         approved_items: list[CatalogItem] = []
         tier1_tokens_per_item = 0
         tier1_cost_per_item = 0.0
@@ -155,7 +174,7 @@ class HorologyMASOrchestrator:
                 tier1_tokens_per_item = max(1, tier1_call.total_tokens // len(approved_items))
                 tier1_cost_per_item = round(tier1_call.cost_usd / len(approved_items), 6)
 
-        # Stage 2 Deep Fetch + Tier 2 Multimodal Appraiser + Automatic Tier 3 Escalation (Concurrent)
+        # Stage 2 Deep Fetch + Tier 2 Multimodal Appraiser (Concurrent)
         import asyncio
 
         sem = asyncio.Semaphore(4)
@@ -184,8 +203,9 @@ class HorologyMASOrchestrator:
                     )
                     return None
 
+                # FinOps Optimization: Download 2 photos (front dial + caseback) during bulk scans
                 images_b64 = await self.vinted_client.download_images_as_base64(
-                    deep_item.photo_urls, max_images=3
+                    deep_item.photo_urls, max_images=2
                 )
 
                 appraisal = await self.tier2.appraise_item(
@@ -204,14 +224,14 @@ class HorologyMASOrchestrator:
                     telemetry.total_cost_usd + tier2_delta_cost, 6
                 )
 
-                # Automatic Tier 3 Escalation Check
+                # Automatic Tier 3 Escalation Check (disabled by default for FinOps efficiency)
                 if self.tier3.should_auto_escalate(appraisal):
                     pre_t3_tokens = appraisal.tokens_used
                     pre_t3_cost = appraisal.cost_usd
                     appraisal = await self.tier3.arbitrate(
                         appraisal=appraisal,
                         description=deep_item.description,
-                        images_b64=images_b64,
+                        images_b64=images_b64[:1],
                         trigger_mode="Auto-Escalation",
                     )
                     telemetry.escalated_tier3 += 1
@@ -285,7 +305,7 @@ class HorologyMASOrchestrator:
             vinted_id, db_path=self.db_path
         )
         images_b64 = await self.vinted_client.download_images_as_base64(
-            base_appraisal.photo_urls, max_images=3
+            base_appraisal.photo_urls, max_images=1
         )
         upgraded = await self.tier3.arbitrate(
             appraisal=base_appraisal,

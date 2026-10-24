@@ -37,11 +37,52 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questi campi in ITALIANO:
 }"""
 
 
+import html
+import re
+from urllib.parse import quote_plus
+from curl_cffi.requests import AsyncSession
+
+
+async def fetch_free_web_market_comps(
+    brand_model: str, reference_caliber: str
+) -> str:
+    """
+    100% Free ($0.00 / €0.00) Python scraper that fetches real market price snippets
+    from DuckDuckGo HTML search for Chrono24 / eBay / Catawiki watch listings,
+    replacing the expensive paid Gemini Google Search Grounding tool ($35/1k queries).
+    """
+    clean_ref = re.sub(r"\[.*?\]", "", reference_caliber or "").strip()
+    query = f"{brand_model} {clean_ref} price EUR Chrono24 eBay".strip()
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    try:
+        async with AsyncSession(impersonate="chrome120", timeout=4.0) as s:
+            resp = await s.get(
+                url,
+                headers={"Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"},
+            )
+            if resp.status_code != 200:
+                return "Nessuno snippet web esterno disponibile (usa conoscenza storica interna)."
+            snippets = re.findall(
+                r'class="result__snippet[^>]*>(.*?)</a>', resp.text, re.DOTALL
+            )
+            cleaned: list[str] = []
+            for raw_snip in snippets[:4]:
+                txt = re.sub(r"<[^>]+>", " ", raw_snip)
+                txt = html.unescape(re.sub(r"\s+", " ", txt)).strip()
+                if txt:
+                    cleaned.append(f"- {txt[:220]}")
+            if cleaned:
+                return "\n".join(cleaned)
+    except Exception:
+        pass
+    return "Nessuno snippet web esterno disponibile (usa conoscenza storica interna)."
+
+
 class Tier3SeniorArbitrator:
     """
-    TIER 3: Senior Horology Arbitrator (High-Reasoning Escalation Model + Live Market Price Check).
-    Triggered automatically when deal_score >= 8 AND (franken_fake_risk == "MEDIUM" OR confidence_score < 0.80),
-    or manually via the UI 'Esegui Perizia Forense Tier 3' button.
+    TIER 3: Senior Horology Arbitrator (High-Reasoning Escalation Model + Free Web Market Comps Check).
+    FinOps Optimized: Invoked ON-DEMAND when the user clicks 'Esegui Perizia Forense Tier 3'
+    or enables Tier 3 in the Direct Link Analyzer, avoiding costly automatic double-vision calls during bulk scans.
     """
 
     def __init__(self, router: MultiProviderLLMRouter) -> None:
@@ -49,21 +90,23 @@ class Tier3SeniorArbitrator:
 
     @staticmethod
     def should_auto_escalate(appraisal: WatchAppraisal) -> bool:
-        return bool(
-            appraisal.deal_score >= 8
-            and (
-                appraisal.franken_fake_risk == "MEDIUM"
-                or appraisal.confidence_score < 0.80
-            )
-        )
+        # FinOps Optimization: Disable automatic Tier 3 escalation during bulk catalog scans.
+        # Tier 3 is now strictly On-Demand (via the WatchCard button or Direct URL checkbox),
+        # saving ~50% of total Vision/Reasoning API spend while keeping full forensic power when requested.
+        return False
 
     async def arbitrate(
         self,
         appraisal: WatchAppraisal,
         description: str = "",
         images_b64: Optional[list[dict[str, str]]] = None,
-        trigger_mode: str = "Auto",
+        trigger_mode: str = "On-Demand",
     ) -> WatchAppraisal:
+        # Fetch live market comps via free Python HTTP scraper ($0.00 API cost)
+        web_comps_text = await fetch_free_web_market_comps(
+            appraisal.identified_brand_model, appraisal.estimated_reference_caliber
+        )
+
         user_prompt = (
             f"ESCALATION FORENSE TIER 3 ({trigger_mode}):\n"
             f"- Orologio: {appraisal.identified_brand_model} ({appraisal.title})\n"
@@ -72,9 +115,10 @@ class Tier3SeniorArbitrator:
             f"- Valore di Mercato stimato in Tier 2: €{appraisal.estimated_market_value_eur_min:.0f} - €{appraisal.estimated_market_value_eur_max:.0f}\n"
             f"- Rischio Franken Tier 2: {appraisal.franken_fake_risk} (Confidenza: {appraisal.confidence_score})\n"
             f"- Note autenticità Tier 2: {appraisal.authenticity_notes}\n"
-            f"- Descrizione venditore: {description}\n"
+            f"- Descrizione venditore: {description[:600]}\n"
+            f"- RISULTATI WEB LIVE GRATUITI (Chrono24 / eBay / Mercato Secondario):\n{web_comps_text}\n\n"
             "Esegui: 1) Audit forense su originalità e referenza; 2) Verifica incrociata sul prezzo reale di mercato "
-            "secondario tra privati (Chrono24 / eBay / Catawiki) confermando o correggendo `estimated_market_value_eur_min` e `max`; "
+            "secondario tra privati (usando i risultati web sopra riportati) confermando o correggendo `estimated_market_value_eur_min` e `max`; "
             "3) Messaggio per il venditore (includendo domanda su precisione di marcia, riserva di carica e scatto rapido data)."
         )
 
@@ -112,13 +156,16 @@ class Tier3SeniorArbitrator:
                 ),
             }
 
+        # FinOps Optimization: Send at most 1 primary dial photo to Tier 3 (since Tier 2 already inspected the photos)
+        compact_images = images_b64[:1] if images_b64 else None
+
         call_result: LLMCallResult = await self.router.generate_json(
             tier=3,
             system_prompt=TIER3_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            images=images_b64,
+            images=compact_images,
             fallback_generator=heuristic_tier3,
-            use_search_grounding=True,
+            use_search_grounding=False,
         )
 
         raw = call_result.parsed_json or heuristic_tier3()
@@ -159,6 +206,10 @@ class Tier3SeniorArbitrator:
         new_offer_raw = raw.get("suggested_offer_eur", offer_target)
         new_offer = round(float(new_offer_raw), 2) if new_offer_raw is not None else offer_target
 
+        model_label = call_result.model_used
+        if "Web Comps" not in model_label:
+            model_label = f"{model_label} + Web Comps (€0)"
+
         return appraisal.model_copy(
             update={
                 "identified_brand_model": str(
@@ -185,7 +236,7 @@ class Tier3SeniorArbitrator:
                     raw.get("suggested_message_to_seller") or fb["suggested_message_to_seller"]
                 ),
                 "tier_reached": "Tier 3 (Senior Arbitrator)",
-                "model_used": call_result.model_used,
+                "model_used": model_label,
                 "tokens_used": appraisal.tokens_used + call_result.total_tokens,
                 "cost_usd": round(appraisal.cost_usd + call_result.cost_usd, 6),
             }

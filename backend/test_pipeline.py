@@ -127,6 +127,12 @@ async def test_llm_router_fallback_and_full_orchestrator_schema() -> None:
             items = client._generate_fallback_catalog("seiko vintage", 250.0, 12)
             assert len(items) >= 8
 
+            async def _deterministic_catalog(search_text: str, price_to=250.0, per_page=12, page=1, sort_order="smart_relevance"):
+                client.last_source_mode = "fallback_catalog"
+                return client._generate_fallback_catalog(search_text, price_to, per_page)
+
+            client.search_catalog = _deterministic_catalog  # type: ignore
+
             orchestrator = HorologyMASOrchestrator(
                 settings=clean_settings,
                 vinted_client=client,
@@ -183,7 +189,7 @@ async def test_llm_router_fallback_and_full_orchestrator_schema() -> None:
 
 @pytest.mark.asyncio
 async def test_fastapi_endpoints_e2e() -> None:
-    """Tests FastAPI endpoints (/api/health, /api/settings, /api/settings/auto-optimize, /api/search, /api/tier3)."""
+    """Tests FastAPI endpoints (/api/health, /api/cached-items, /api/settings, /api/settings/auto-optimize, /api/search, /api/tier3)."""
     import httpx
     from backend.main import app
 
@@ -193,6 +199,10 @@ async def test_fastapi_endpoints_e2e() -> None:
         assert r_health.status_code == 200
         assert r_health.json()["status"] == "ok"
 
+        r_cached = await client.get("/api/cached-items?limit=10")
+        assert r_cached.status_code == 200
+        assert r_cached.json()["telemetry"]["total_cost_usd"] == 0.0
+
         r_settings = await client.get("/api/settings")
         assert r_settings.status_code == 200
         settings_data = r_settings.json()
@@ -200,6 +210,7 @@ async def test_fastapi_endpoints_e2e() -> None:
         r_opt = await client.post("/api/settings/auto-optimize", json=settings_data)
         assert r_opt.status_code == 200
         assert r_opt.json()["auto_optimize_enabled"] is True
+        assert r_opt.json()["tier2_model"] == "gemini-3.1-flash-lite-preview"
 
         r_search = await client.post(
             "/api/search",
@@ -208,7 +219,7 @@ async def test_fastapi_endpoints_e2e() -> None:
                 "max_price": 250.0,
                 "max_items": 10,
                 "only_verified_working": True,
-                "bypass_cache": True,
+                "bypass_cache": False,
             },
         )
         assert r_search.status_code == 200

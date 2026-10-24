@@ -16,10 +16,10 @@ FASHION_JUNK_BRANDS = re.compile(
 
 TIER1_SYSTEM_PROMPT = """Sei l'Agente Tier 1 (Batch Triage Screener) di Vinted Horology Hunter.
 Ricevi una lista JSON compatta (fino a 20 annunci) di orologi sopravvissuti al filtro deterministico Tier 0.
-Il tuo compito:
+Il tuo compito (Ottimizzazione FinOps):
 1. SCARTARE IMMEDIATAMENTE qualsiasi oggetto che NON sia un vero orologio da polso completo (es. cinturini, scatole vuote, maglie di ricambio, bracciali, abbigliamento, sveglie, occhiali).
 2. Scartare orologi fashion/moda privi di valore collezionistico (es. Daniel Wellington, MVMT, Michael Kors, hommage cinesi ultra-economici), quarzi banali prezzati come meccanici, o annunci troppo vaghi/sospetti ("non testato", "non so se funziona").
-3. Promuovere al Tier 2 solo i candidati che sono veri orologi da polso funzionanti con reale potenziale orologiero e buon rapporto qualità/prezzo (es. Seiko vintage 6139/5606/6106/7009/7S26/Kinetic/King Quartz, Orient Star, Orient 3 Star, Citizen Promaster/Aqualand/Eco-Drive, cronografi meccanici svizzeri, Tissot, Hamilton, ecc.).
+3. Selezionare e promuovere al Tier 2 AL MASSIMO I MIGLIORI 8 CANDIDATI (Top 8) con il più alto potenziale di margine/collezionismo (es. Seiko vintage 6139/5606/6106/7009/7S26/Kinetic/King Quartz, Orient Star, Orient 3 Star, Citizen Promaster/Aqualand/Eco-Drive, cronografi meccanici svizzeri, Tissot, Hamilton, ecc.).
 4. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido con questa struttura:
 {
   "approved_item_ids": [123, 456],
@@ -29,18 +29,20 @@ Il tuo compito:
   }
 }"""
 
+MAX_TIER1_PROMOTIONS = 8
+
 
 class Tier1BatchScreener:
     """
     TIER 1: Batch Triage Screener Agent (Ultra-Low-Cost Text Model).
-    Processes up to 20 Stage 1 items in a single batch prompt.
+    Processes up to 20 Stage 1 items in a single batch prompt and promotes at most the top 8 candidates.
     """
 
     def __init__(self, router: MultiProviderLLMRouter) -> None:
         self.router = router
 
     async def screen_batch(
-        self, items: list[CatalogItem]
+        self, items: list[CatalogItem], max_promotions: int = MAX_TIER1_PROMOTIONS
     ) -> tuple[Tier1BatchOutput, LLMCallResult]:
         batch = items[:20]
         compact_payload = [
@@ -54,9 +56,9 @@ class Tier1BatchScreener:
             for item in batch
         ]
         user_prompt = (
-            "Valuta questo batch di annunci Vinted (max 20 elementi) e seleziona gli ID da promuovere "
-            "all'analisi multimodale Tier 2:\n"
-            + json.dumps(compact_payload, ensure_ascii=False, indent=2)
+            f"Valuta questo batch di annunci Vinted ({len(batch)} elementi) e seleziona AL MASSIMO {max_promotions} ID "
+            "con il miglior rapporto qualità/prezzo da promuovere all'analisi multimodale Tier 2:\n"
+            + json.dumps(compact_payload, ensure_ascii=False)
         )
 
         def heuristic_fallback() -> dict[str, Any]:
@@ -74,10 +76,15 @@ class Tier1BatchScreener:
                         "Scartato Tier 1: orologio moda al quarzo sovrapprezzato."
                     )
                     continue
-                approved_ids.append(it.id)
-                notes[str(it.id)] = (
-                    "Promosso Tier 1: referenza di interesse orologiero meritevole di perizia visiva Stage 2."
-                )
+                if len(approved_ids) < max_promotions:
+                    approved_ids.append(it.id)
+                    notes[str(it.id)] = (
+                        "Promosso Tier 1: referenza di interesse orologiero meritevole di perizia visiva Stage 2."
+                    )
+                else:
+                    notes[str(it.id)] = (
+                        "Scartato Tier 1 (Cap FinOps): priorità inferiore rispetto ai Top candidati del batch."
+                    )
             return {
                 "approved_item_ids": approved_ids,
                 "triage_notes": notes,
@@ -98,7 +105,7 @@ class Tier1BatchScreener:
         for val in raw_ids:
             try:
                 int_id = int(val)
-                if int_id in batch_id_set:
+                if int_id in batch_id_set and int_id not in valid_ids:
                     valid_ids.append(int_id)
             except (ValueError, TypeError):
                 continue
@@ -108,6 +115,8 @@ class Tier1BatchScreener:
             fb = heuristic_fallback()
             valid_ids = fb["approved_item_ids"]
             raw_json["triage_notes"] = fb["triage_notes"]
+
+        valid_ids = valid_ids[:max_promotions]
 
         notes_dict = {
             str(k): str(v) for k, v in (raw_json.get("triage_notes") or {}).items()

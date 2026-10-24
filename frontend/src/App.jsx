@@ -28,7 +28,7 @@ const PRESET_QUERIES = [
 export default function App() {
   const [query, setQuery] = useState('Seiko Vintage')
   const [maxPrice, setMaxPrice] = useState(500)
-  const [maxItems, setMaxItems] = useState(16)
+  const [maxItems, setMaxItems] = useState(10)
   const [sortOrder, setSortOrder] = useState('smart_relevance')
   const [onlyVerifiedWorking, setOnlyVerifiedWorking] = useState(false)
   const [bypassCache, setBypassCache] = useState(false)
@@ -74,7 +74,7 @@ export default function App() {
     tier1_provider: 'gemini',
     tier1_model: 'gemini-3.1-flash-lite-preview',
     tier2_provider: 'gemini',
-    tier2_model: 'gemini-3-flash-preview',
+    tier2_model: 'gemini-3.1-flash-lite-preview',
     tier3_provider: 'gemini',
     tier3_model: 'gemini-3-flash-preview',
     auto_optimize_enabled: true,
@@ -82,7 +82,7 @@ export default function App() {
 
   useEffect(() => {
     fetchSettings()
-    executeScan('Seiko Vintage', 500, 16, false, 'smart_relevance')
+    loadInitialCachedOrScan()
   }, [])
 
   const fetchSettings = async () => {
@@ -95,6 +95,25 @@ export default function App() {
     } catch {
       // ignore initial offline error
     }
+  }
+
+  const loadInitialCachedOrScan = async () => {
+    try {
+      const resp = await fetch('/api/cached-items?limit=24')
+      if (resp.ok) {
+        const data = await resp.json()
+        if (data.items && data.items.length > 0) {
+          setItems(data.items)
+          if (data.telemetry) {
+            setTelemetry(data.telemetry)
+          }
+          return
+        }
+      }
+    } catch {
+      // fallback to scan if endpoint fails
+    }
+    executeScan('Seiko Vintage', 500, 10, false, 'smart_relevance')
   }
 
   const executeScan = async (

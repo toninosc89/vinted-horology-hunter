@@ -10,7 +10,9 @@ from backend.agents.llm_router import MultiProviderLLMRouter
 from backend.agents.orchestrator import HorologyMASOrchestrator
 from backend.database import (
     clear_appraisal_cache,
+    clear_heuristic_only_cache,
     init_db,
+    list_cached_appraisals,
     load_router_settings,
     reconcile_all_cached_appraisals,
     save_router_settings,
@@ -18,6 +20,7 @@ from backend.database import (
 from backend.schemas import (
     AnalyzeUrlRequest,
     LLMRouterSettings,
+    PipelineTelemetry,
     SearchRequest,
     SearchResponse,
     Tier3EscalationRequest,
@@ -65,6 +68,23 @@ async def health_check() -> dict[str, Any]:
         "tier2_model": f"{settings.tier2_provider}/{settings.tier2_model}",
         "tier3_model": f"{settings.tier3_provider}/{settings.tier3_model}",
     }
+
+
+@app.get("/api/cached-items", response_model=SearchResponse)
+async def get_cached_items(limit: int = 30) -> SearchResponse:
+    cached_items = list_cached_appraisals(limit=limit)
+    telemetry = PipelineTelemetry(
+        query="Cache SQLite (0 Token)",
+        source_mode="live",
+        items_extracted=len(cached_items),
+        cache_hits_tier0=len(cached_items),
+        estimated_tokens_saved=len(cached_items) * 1450,
+        total_tokens_used=0,
+        total_cost_usd=0.0,
+        total_cost_eur=0.0,
+        duration_seconds=0.01,
+    )
+    return SearchResponse(items=cached_items, telemetry=telemetry)
 
 
 @app.post("/api/search", response_model=SearchResponse)
@@ -122,13 +142,13 @@ async def get_settings() -> LLMRouterSettings:
 
 @app.post("/api/settings", response_model=LLMRouterSettings)
 async def update_settings(settings: LLMRouterSettings) -> LLMRouterSettings:
-    clear_appraisal_cache()
+    clear_heuristic_only_cache()
     return save_router_settings(settings)
 
 
 @app.post("/api/settings/auto-optimize", response_model=LLMRouterSettings)
 async def auto_optimize_router(settings: LLMRouterSettings) -> LLMRouterSettings:
-    clear_appraisal_cache()
+    clear_heuristic_only_cache()
     router = MultiProviderLLMRouter(settings)
     optimized = router.auto_optimize_settings()
     return save_router_settings(optimized)
